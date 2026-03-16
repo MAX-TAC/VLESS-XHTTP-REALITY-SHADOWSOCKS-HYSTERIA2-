@@ -146,7 +146,7 @@ systemctl restart nginx || log_error "Не удалось запустить Ngi
 
 log_success "Nginx готов"
 
-# 7. Xray
+# Установка Xray
 log_info "Установка Xray..."
 mkdir -p /etc/xray /var/log/xray
 XRAY_VER=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r .tag_name | sed 's/v//')
@@ -154,6 +154,13 @@ wget -q "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-l
 unzip -qo /tmp/xray.zip -d /usr/local/bin/ xray
 chmod +x /usr/local/bin/xray
 rm -f /tmp/xray.zip
+
+# Скачиваем geoip.dat и geosite.dat (обязательно для routing с geoip:private)
+log_info "Скачиваем geoip.dat и geosite.dat..."
+mkdir -p /usr/local/share/xray
+
+wget -q -O /usr/local/share/xray/geoip.dat    "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
+wget -q -O /usr/local/share/xray/geosite.dat  "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
 
 # Reality ключи — берём PrivateKey и Password (pbk = Password)
 xray_keys=$(xray x25519 2>/dev/null)
@@ -251,6 +258,7 @@ cat > /etc/systemd/system/xray.service << 'EOF'
 Description=Xray Service
 After=network.target
 [Service]
+Environment="XRAY_LOCATION_ASSET=/usr/local/share/xray"
 ExecStart=/usr/local/bin/xray run -c /etc/xray/config.json
 Restart=on-failure
 LimitNOFILE=65536
