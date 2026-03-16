@@ -2,6 +2,7 @@
 # =============================================
 # NODE INSTALLER — Xray + Hysteria2 + Nginx fake login page
 # Один пользователь для VLESS-XHTTP-REALITY + Shadowsocks-2022 + Hysteria2
+# Сертификаты получаются ДО настройки HTTPS в Nginx
 # =============================================
 
 set -e
@@ -25,7 +26,7 @@ log_info "=== Установка Xray + Hysteria2 + Nginx (fake login) ==="
 apt update && apt upgrade -y -qq
 apt install -y nginx curl wget unzip jq openssl uuid-runtime certbot python3-certbot-nginx cron -qq
 
-# 2. Домен + сертификат
+# 2. Домен + email
 echo ""
 log_info "=== Настройка домена и SSL ==="
 read -p "Домен для заглушки (например portal.example.com): " DOMAIN
@@ -33,6 +34,7 @@ read -p "Email для Let's Encrypt: " EMAIL
 
 [ -z "$DOMAIN" ] || [ -z "$EMAIL" ] && log_error "Домен и email обязательны"
 
+# Создаём заглушку
 mkdir -p /var/www/fake
 cat > /var/www/fake/index.html << 'EOF'
 <!DOCTYPE html>
@@ -67,7 +69,41 @@ EOF
 
 chmod -R 755 /var/www/fake
 
-# Nginx config
+# 3. Временный Nginx ТОЛЬКО на 80 порту (без SSL)
+log_info "Настраиваем Nginx только на HTTP (для Certbot)..."
+cat > /etc/nginx/sites-available/fake << EOF
+server {
+    listen 80;
+    server_name ${DOMAIN};
+
+    root /var/www/fake;
+    index index.html;
+
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+}
+EOF
+
+ln -sf /etc/nginx/sites-available/fake /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+
+nginx -t || log_error "Nginx не запускается даже на 80 порту — проверь конфиг или конфликты"
+systemctl restart nginx || log_error "Не удалось перезапустить Nginx"
+
+# 4. Получаем сертификат через standalone (самый надёжный способ без конфликтов)
+log_info "Получаем сертификат через standalone (Certbot поднимет свой сервер на 80)..."
+certbot certonly --standalone \
+  -d "${DOMAIN}" \
+  --email "${EMAIL}" \
+  --agree-tos \
+  --non-interactive \
+  --no-eff-email || log_error "Certbot не смог получить сертификат. Проверь: домен указывает на IP сервера? 80 порт открыт? Нет ли firewall-блоков?"
+
+log_success "Сертификат успешно получен!"
+
+# 5. Теперь добавляем HTTPS в конфиг Nginx
+log_info "Добавляем HTTPS в конфиг Nginx..."
 cat > /etc/nginx/sites-available/fake << EOF
 server {
     listen 80;
@@ -91,14 +127,10 @@ server {
 }
 EOF
 
-ln -sf /etc/nginx/sites-available/fake /etc/nginx/sites-enabled/
-rm -f /etc/nginx/sites-enabled/default
+nginx -t || log_error "Nginx конфиг с HTTPS не прошёл проверку"
+systemctl restart nginx || log_error "Не удалось запустить Nginx с HTTPS"
 
-log_info "Получаем сертификат..."
-certbot --nginx -d "${DOMAIN}" --email "${EMAIL}" --agree-tos --non-interactive --redirect || log_error "Certbot ошибка"
-
-nginx -t && systemctl restart nginx
-log_success "Nginx + fake login на https://${DOMAIN}"
+log_success "Nginx + fake login на https://${DOMAIN} готов"
 
 # 3. Xray
 log_info "Установка Xray..."
