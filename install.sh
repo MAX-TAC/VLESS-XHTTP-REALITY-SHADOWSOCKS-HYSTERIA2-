@@ -25,7 +25,15 @@ log_info "=== Установка Xray + Hysteria2 + Nginx (fake login) ==="
 # 1. Зависимости
 log_info "Установка зависимостей..."
 apt update && apt upgrade -y -qq
-apt install -y nginx curl wget unzip jq openssl uuid-runtime certbot python3-certbot-nginx cron -qq
+apt install -y nginx curl wget unzip jq openssl uuid-runtime certbot python3-certbot-nginx cron ufw -qq
+
+# Открываем необходимые порты (если ufw активен)
+if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+    ufw allow 443/udp
+    log_info "Порты 80, 443 TCP/UDP открыты в ufw"
+fi
 
 # 2. Домен и email
 echo ""
@@ -70,7 +78,7 @@ EOF
 
 chmod -R 755 /var/www/fake
 
-# 4. Временный Nginx только на 80 (для Certbot webroot)
+# 4. Временный Nginx только на 80
 log_info "Запускаем Nginx только на порту 80 для получения сертификата..."
 cat > /etc/nginx/sites-available/fake << EOF
 server {
@@ -92,7 +100,7 @@ rm -f /etc/nginx/sites-enabled/default
 nginx -t || log_error "Nginx не прошёл проверку на 80 порту"
 systemctl restart nginx || log_error "Не удалось запустить Nginx на 80"
 
-# 5. Получаем сертификат через webroot (Nginx отдаёт challenge-файлы)
+# 5. Получаем сертификат через webroot
 log_info "Получаем сертификат через webroot..."
 certbot certonly --webroot \
   -w /var/www/fake \
@@ -100,15 +108,13 @@ certbot certonly --webroot \
   --email "${EMAIL}" \
   --agree-tos \
   --non-interactive \
-  --no-eff-email || log_error "Certbot webroot не сработал. Посмотри: tail -n 50 /var/log/letsencrypt/letsencrypt.log"
+  --no-eff-email || log_error "Certbot webroot не сработал. Лог: tail -n 50 /var/log/letsencrypt/letsencrypt.log"
 
-if [ ! -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]; then
-    log_error "Сертификат не найден после certbot"
-fi
+[ ! -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ] && log_error "Сертификат не найден"
 
 log_success "Сертификат получен!"
 
-# 6. Добавляем HTTPS в конфиг Nginx
+# 6. Добавляем HTTPS в Nginx
 log_info "Добавляем HTTPS в конфиг Nginx..."
 cat > /etc/nginx/sites-available/fake << EOF
 server {
@@ -138,7 +144,7 @@ systemctl restart nginx || log_error "Не удалось запустить Ngi
 
 log_success "Nginx + fake login на https://${DOMAIN} готов"
 
-# 7. Установка Xray
+# 7. Xray
 log_info "Установка Xray..."
 mkdir -p /etc/xray /var/log/xray
 XRAY_VER=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r .tag_name | sed 's/v//')
@@ -153,8 +159,10 @@ PRIVATE_KEY=$(echo "$xray_keys" | grep Private | awk '{print $2}')
 PUBLIC_KEY=$(echo "$xray_keys" | grep Public | awk '{print $2}')
 SHORT_ID=$(openssl rand -hex 8)
 
-# SS server password
-SS_SERVER_PASS=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 22)
+# Генерация 32-байтовых ключей для Shadowsocks 2022
+generate_2022_key() {
+    openssl rand -base64 32 | tr -d '\n='
+}
 
 # Настройки Xray
 echo ""
@@ -175,11 +183,13 @@ read -p "Имя пользователя (a-z0-9_): " USERNAME
 
 UUID=$(uuidgen)
 HY_PASS=$(openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c 16)
-SS_USER_PASS=$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 16)
+SS_SERVER_PASS=$(generate_2022_key)
+SS_USER_PASS=$(generate_2022_key)
 
 log_success "Пользователь: ${USERNAME}"
 log_info "UUID ............ ${UUID}"
 log_info "Hysteria2 pass .. ${HY_PASS}"
+log_info "SS server pass .. ${SS_SERVER_PASS}"
 log_info "SS user pass .... ${SS_USER_PASS}"
 
 # Xray конфиг
@@ -254,7 +264,7 @@ EOF
 systemctl daemon-reload
 systemctl enable --now xray
 
-# Hysteria2
+# 8. Hysteria2
 log_info "Установка Hysteria2..."
 HY_VER=$(curl -s https://api.github.com/repos/apernet/hysteria/releases/latest | jq -r .tag_name)
 wget -q "https://github.com/apernet/hysteria/releases/download/${HY_VER}/hysteria-linux-amd64" -O /usr/local/bin/hysteria
@@ -262,7 +272,7 @@ chmod +x /usr/local/bin/hysteria
 
 OBFS_PASS=$(openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c 16)
 
-mkdir -p /etc/hysteria   # ← вот эта строка решает проблему
+mkdir -p /etc/hysteria
 
 cat > /etc/hysteria/config.yaml << EOF
 listen: :443
@@ -284,7 +294,6 @@ obfs:
 masquerade: https://${DOMAIN}
 EOF
 
-# systemd для Hysteria2 (оставь как было)
 cat > /etc/systemd/system/hysteria.service << 'EOF'
 [Unit]
 Description=Hysteria2 Server
@@ -296,22 +305,26 @@ LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 EOF
-
 systemctl daemon-reload
 systemctl enable --now hysteria
 
-# Сохранение ключей и ссылок
+# Открываем порт Shadowsocks и UDP 443
+ufw allow "${SS_PORT}"/tcp || true
+ufw allow 443/udp || true
+ufw reload || true
+
+# 9. Сохранение ключей и ссылок
 mkdir -p /root/node-keys
 IP=$(curl -s4 icanhazip.com || echo "YOUR_IP")
 
 cat > /root/node-keys/credentials.txt << EOF
 Пользователь: ${USERNAME}
 
-VLESS:
-vless://${UUID}@${IP}:4433?type=xhttp&security=reality&pbk=${PUBLIC_KEY}&fp=chrome&sni=${SNI}&sid=${SHORT_ID}&spx=%2F#VLESS-XHTTP-REALITY
+VLESS (полная ссылка):
+vless://${UUID}@${IP}:4433?type=xhttp&security=reality&pbk=${PUBLIC_KEY}&fp=chrome&sni=${SNI}&sid=${SHORT_ID}&mode=stream-one&path=${XHTTP_PATH}#VLESS-XHTTP-REALITY-${USERNAME}
 
-Shadowsocks:
-ss://2022-blake3-aes-256-gcm:${SS_SERVER_PASS}:${SS_USER_PASS}@${IP}:${SS_PORT}#SS-2022-256
+Shadowsocks (2022-blake3-aes-256-gcm):
+ss://2022-blake3-aes-256-gcm:${SS_SERVER_PASS}@${IP}:${SS_PORT}?password=${SS_USER_PASS}#SS-2022-256-${USERNAME}
 
 Hysteria2:
 hysteria2://${USERNAME}:${HY_PASS}@${IP}:443/?insecure=0&sni=${DOMAIN}&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2-${DOMAIN}
@@ -321,4 +334,7 @@ log_success "Установка завершена!"
 log_info "Ключи и ссылки сохранены в:"
 cat /root/node-keys/credentials.txt
 
+log_info "Проверьте статус сервисов:"
+log_info "systemctl status xray"
+log_info "systemctl status hysteria"
 log_info "Рекомендуется перезагрузить сервер: reboot"
