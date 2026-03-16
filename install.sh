@@ -316,13 +316,13 @@ cat > /root/node-keys/credentials.txt << EOF
 Пользователь: ${USERNAME}
 
 VLESS:
-vless://${UUID}@${IP}:4433?type=xhttp&security=reality&pbk=${PUBLIC_KEY}&fp=chrome&sni=${SNI}&sid=${SHORT_ID}&mode=stream-one&path=${XHTTP_PATH}#VLESS-XHTTP-REALITY-${USERNAME}
+vless://${UUID}@${IP}:4433?type=xhttp&encryption=none&path=${XHTTP_PATH}&host=&mode=stream-one&security=reality&pbk=${PUBLIC_KEY}&fp=chrome&sni=${SNI}&sid=${SHORT_ID}&spx=%2F#VLESS-XHTTP-REALITY
 
 Shadowsocks:
-ss://2022-blake3-aes-256-gcm:${SS_SERVER_PASS}@${IP}:${SS_PORT}?password=${SS_USER_PASS}#SS-2022-256-${USERNAME}
+ss://2022-blake3-aes-256-gcm:${SS_SERVER_PASS}:${SS_USER_PASS}@${IP}:${SS_PORT}?type=tcp#Shadowsocks
 
 Hysteria2:
-hysteria2://${USERNAME}:${HY_PASS}@${IP}:443/?insecure=0&sni=${DOMAIN}&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2-${DOMAIN}
+hysteria2://${USERNAME}:${HY_PASS}@${IP}:443/?insecure=0&sni=${DOMAIN}&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2
 EOF
 
 log_success "Установка завершена!"
