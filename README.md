@@ -1,5 +1,5 @@
-# VLESS-XHTTP-REALITY-SHADOWSOCKS-HYSTERIA2-
-# VLESS + XHTTP + REALITY + Shadowsocks + Hysteria² Node Installer
+
+# VLESS XHTTP REALITY + Shadowsocks + Hysteria2 Installer
 
 Одноразовый bash-скрипт для быстрого развёртывания **чистой ноды** (без панели) с поддержкой трёх протоколов:
 
