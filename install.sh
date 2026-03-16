@@ -118,7 +118,8 @@ choose_domain() {
     echo -e "${ARROW} Выберите способ задания домена:"
     echo "   1) Ввести свой домен (например, vpn.example.com)"
     echo "   2) Сгенерировать бесплатный поддомен через DuckDNS"
-    read -p "Ваш выбор [1/2]: " domain_choice
+    echo "   3)Сгенерировать бесплатный поддомен через FreemyIP"
+    read -p "Выберите ваш вариант [1-3]: " domain_choice
 
     case $domain_choice in
         2)
@@ -155,6 +156,31 @@ choose_domain() {
                 log_warning "Домен $DOMAIN не резолвится. Убедитесь, что DNS запись настроена."
             else
                 log_success "Домен $DOMAIN резолвится корректно"
+            fi
+            ;;
+         3)  
+            log_info "Генерация домена через FreemyIP (без регистрации)"
+            read -p "Желаемое имя поддомена (только латиница, например myvpn): " FREEMY_NAME
+            if [[ -z "$FREEMY_NAME" || ! "$FREEMY_NAME" =~ ^[a-zA-Z0-9-]+$ ]]; then
+                log_error "Имя должно содержать только буквы, цифры и дефис"
+            fi
+    
+            DOMAIN="${FREEMY_NAME}.freemyip.com"
+            IP=$(curl -s4 ifconfig.me || curl -s4 icanhazip.com)
+            
+            log_info "Регистрируем домен $DOMAIN с IP $IP..."
+    
+            # Запрос к API FreemyIP
+            RESPONSE=$(curl -s "https://freemyip.com/update?domain=${DOMAIN}&token=${TOKEN:-''}")
+    
+            # Проверяем ответ
+            if echo "$RESPONSE" | grep -q "success"; then
+                log_success "Домен $DOMAIN успешно зарегистрирован"
+                # Сохраняем токен, если нужно обновлять IP позже
+                TOKEN=$(echo "$RESPONSE" | grep -o 'token=[^&]*' | cut -d= -f2)
+                echo "Токен для обновлений: $TOKEN" >> /root/freemyip_token.txt
+            else
+                log_error "Ошибка FreemyIP: $RESPONSE"
             fi
             ;;
     esac
