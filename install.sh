@@ -1,10 +1,8 @@
 #!/bin/bash
 # =============================================================================
-# NODE INSTALLER — Xray + Hysteria2 + Nginx (фейковая страница логина)
+# INSTALLER — Xray + Hysteria2 + Nginx (фейковая страница логина)
 # Один пользователь для VLESS-XHTTP-REALITY + Shadowsocks-2022 + Hysteria2
 # Сертификат получает через --webroot
-# Пароли SS — чистый base64 без изменений
-# pbk в VLESS — это Password из xray x25519
 # =============================================================================
 
 set -e
@@ -49,31 +47,255 @@ read -p "Email для Let's Encrypt: " EMAIL
 mkdir -p /var/www/fake
 cat > /var/www/fake/index.html << 'EOF'
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Secure Access</title>
-  <style>
-    body { margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9; height:100vh; display:flex; align-items:center; justify-content:center; }
-    .login-box { background:#161b22; padding:40px; border-radius:8px; width:360px; box-shadow:0 4px 20px rgba(0,0,0,0.5); text-align:center; }
-    h2 { margin:0 0 30px; color:#58a6ff; }
-    input { width:100%; padding:12px; margin:10px 0; border:1px solid #30363d; border-radius:6px; background:#0d1117; color:#c9d1d9; font-size:16px; }
-    button { width:100%; padding:12px; background:#238636; color:white; border:none; border-radius:6px; font-size:16px; cursor:pointer; }
-    button:hover { background:#2ea043; }
-    .footer { margin-top:30px; font-size:12px; color:#8b949e; }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>404 — белые падающие звёзды</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: #03030a;
+            font-family: 'Segoe UI', 'Montserrat', sans-serif;
+            height: 100vh;
+            overflow: hidden;
+            color: white;
+        }
+
+        canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        .content {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 2;
+            text-align: center;
+            text-shadow: 0 0 20px rgba(255, 255, 255, 0.7);
+            pointer-events: none;
+        }
+
+        h1 {
+            font-size: 15vw;
+            font-weight: 800;
+            letter-spacing: 0.1em;
+            margin: 0;
+            line-height: 1;
+            background: linear-gradient(45deg, #b0e0ff, #f0f8ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            filter: drop-shadow(0 0 25px #7ec8ff);
+        }
+
+        p {
+            font-size: clamp(1.5rem, 4vw, 2.5rem);
+            letter-spacing: 0.5em;
+            margin-top: 0.5rem;
+            font-weight: 300;
+            color: #e6f0ff;
+            text-transform: uppercase;
+            opacity: 0.9;
+            text-shadow: 0 0 15px #a0d0ff;
+        }
+
+        .hint {
+            position: absolute;
+            bottom: 20px;
+            left: 0;
+            width: 100%;
+            text-align: center;
+            color: #7a8b9c;
+            font-size: 0.9rem;
+            z-index: 2;
+            letter-spacing: 2px;
+            opacity: 0.6;
+        }
+    </style>
 </head>
 <body>
-  <div class="login-box">
-    <h2>Secure Access</h2>
-    <form>
-      <input type="text" placeholder="Username" required>
-      <input type="password" placeholder="Password" required>
-      <button type="submit">Sign In</button>
-    </form>
-    <div class="footer">© 2026 Protected Service</div>
-  </div>
+    <canvas id="starCanvas"></canvas>
+    <div class="content">
+        <h1>404</h1>
+        <p>Page Not Found</p>
+    </div>
+    <div class="hint">✨ загадай желание, пока звезда летит</div>
+
+    <script>
+        const canvas = document.getElementById('starCanvas');
+        const ctx = canvas.getContext('2d');
+        let width, height;
+
+        // Звёзды фона
+        let stars = [];
+        // Падающая звезда
+        let shootingStar = null;
+
+        const STARS_COUNT = 200;
+        const SHOOTING_STAR_INTERVAL = 5000; // каждые 5 секунд
+
+        // Инициализация звёзд (больше в нижней части)
+        function initStars() {
+            stars = [];
+            for (let i = 0; i < STARS_COUNT; i++) {
+                const y = Math.random() < 0.7 
+                    ? height * 0.5 + Math.random() * height * 0.5
+                    : Math.random() * height * 0.5;
+                stars.push({
+                    x: Math.random() * width,
+                    y: y,
+                    radius: Math.random() * 2.5 + 1,
+                    brightness: Math.random() * 0.5 + 0.3,
+                    speed: Math.random() * 0.02 + 0.005,
+                    phase: Math.random() * 2 * Math.PI
+                });
+            }
+        }
+
+        // Создание новой падающей звезды (с улучшенными параметрами)
+        function createShootingStar() {
+            const startX = Math.random() * width * 0.8 + width * 0.1;
+            const startY = Math.random() * height * 0.3;
+            const angle = (Math.random() * 30 - 15) * (Math.PI / 180);
+            // Увеличенная скорость: 20–30 пикселей за кадр
+            const speed = 20 + Math.random() * 10;
+            // Укороченный хвост (в 1.5 раза короче предыдущего: теперь 20–33)
+            const tailLength = 20 + Math.floor(Math.random() * 14); // от 20 до 33
+
+            shootingStar = {
+                x: startX,
+                y: startY,
+                vx: Math.sin(angle) * speed,
+                vy: Math.cos(angle) * speed,
+                age: 0,
+                maxAge: 80 + Math.floor(Math.random() * 40), // чуть меньше, так как быстрее
+                tail: [],
+                tailLength: tailLength
+            };
+        }
+
+        function resizeCanvas() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width;
+            canvas.height = height;
+            initStars();
+            shootingStar = null;
+        }
+
+        // Отрисовка мерцающих звёзд фона
+        function drawStars(time) {
+            for (let s of stars) {
+                const twinkle = Math.sin(time * s.speed + s.phase) * 0.3 + 0.7;
+                const alpha = Math.min(s.brightness * twinkle, 1.0);
+                ctx.beginPath();
+                ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(255, 255, 240, ${alpha})`;
+                ctx.fill();
+            }
+        }
+
+        // Отрисовка падающей звезды (чисто белая, тонкая, быстрая)
+        function drawShootingStar() {
+            if (!shootingStar) return;
+
+            // Добавляем текущую позицию в начало хвоста
+            shootingStar.tail.unshift({ x: shootingStar.x, y: shootingStar.y });
+            if (shootingStar.tail.length > shootingStar.tailLength) {
+                shootingStar.tail.pop();
+            }
+
+            // Рисуем хвост как серию соединённых отрезков
+            if (shootingStar.tail.length >= 2) {
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                for (let i = 1; i < shootingStar.tail.length; i++) {
+                    const p1 = shootingStar.tail[i - 1];
+                    const p2 = shootingStar.tail[i];
+                    
+                    // Коэффициент старения (1 у головы, 0 у конца)
+                    const ageFactor = (shootingStar.tail.length - i) / shootingStar.tail.length;
+                    
+                    // Тонкая линия: толщина от 3 у головы до 0.5 у конца
+                    const lineWidth = 3 * ageFactor + 0.5;
+                    // Прозрачность от 0.8 до 0
+                    const opacity = 0.8 * ageFactor;
+                    
+                    ctx.beginPath();
+                    ctx.moveTo(p1.x, p1.y);
+                    ctx.lineTo(p2.x, p2.y);
+                    ctx.strokeStyle = `rgba(255, 255, 255, ${opacity})`;
+                    ctx.lineWidth = lineWidth;
+                    ctx.stroke();
+                }
+            }
+
+            // Голова звезды (яркая белая точка)
+            ctx.beginPath();
+            ctx.arc(shootingStar.x, shootingStar.y, 3, 0, Math.PI * 2); // чуть меньше диаметр
+            ctx.fillStyle = 'rgba(255, 255, 255, 1)';
+            ctx.fill();
+
+            // Перемещение
+            shootingStar.x += shootingStar.vx;
+            shootingStar.y += shootingStar.vy;
+            shootingStar.age++;
+
+            // Удалить, если улетел или состарился
+            if (shootingStar.y > height + 100 || shootingStar.x < -100 || shootingStar.x > width + 100 || shootingStar.age > shootingStar.maxAge) {
+                shootingStar = null;
+            }
+        }
+
+        // Анимация
+        let lastTimestamp = 0;
+        let timeAcc = 0;
+        function animate(timestamp) {
+            if (!lastTimestamp) lastTimestamp = timestamp;
+            const delta = timestamp - lastTimestamp;
+            lastTimestamp = timestamp;
+
+            timeAcc += delta;
+            if (timeAcc > SHOOTING_STAR_INTERVAL) {
+                timeAcc = 0;
+                if (!shootingStar) {
+                    createShootingStar();
+                }
+            }
+
+            ctx.clearRect(0, 0, width, height);
+
+            drawStars(timestamp * 0.002);
+            drawShootingStar();
+
+            requestAnimationFrame(animate);
+        }
+
+        window.addEventListener('resize', () => {
+            resizeCanvas();
+            timeAcc = 0;
+        });
+
+        resizeCanvas();
+        setTimeout(() => {
+            if (!shootingStar) createShootingStar();
+        }, 500);
+
+        requestAnimationFrame(animate);
+    </script>
 </body>
 </html>
 EOF
