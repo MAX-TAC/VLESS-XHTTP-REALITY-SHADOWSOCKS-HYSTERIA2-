@@ -139,32 +139,44 @@ choose_domain() {
             DOMAIN="${DUCK_SUBDOMAIN}.duckdns.org"
             log_success "Домен $DOMAIN успешно настроен"
             ;;
-        3)
-            # FreemyIP (без регистрации)
-            log_info "Генерация через FreemyIP"
-            read -p "Желаемое имя поддомена (только латиница, например myvpn): " FREEMY_NAME
+        3)  
+            log_info "Генерация домена через FreemyIP (с токеном)"
+            read -p "Желаемое имя поддомена (например myvpn): " FREEMY_NAME
             if [[ -z "$FREEMY_NAME" || ! "$FREEMY_NAME" =~ ^[a-zA-Z0-9-]+$ ]]; then
                 log_error "Имя должно содержать только буквы, цифры и дефис"
             fi
-            
+    
+            # Важно: сначала нужно зарегистрировать домен через браузер
+            echo -e "\n${YELLOW}╔════════════════════════════════════════════════════════════╗${NC}"
+            echo -e "${YELLOW}║      ДЕЙСТВИЕ ТРЕБУЕТСЯ В БРАУЗЕРЕ                       ║${NC}"
+            echo -e "${YELLOW}╠════════════════════════════════════════════════════════════╣${NC}"
+            echo -e "${YELLOW}║ 1. Откройте сайт https://freemyip.com                     ║${NC}"
+            echo -e "${YELLOW}║ 2. В поле 'Domain' введите: ${FREEMY_NAME}               ║${NC}"
+            echo -e "${YELLOW}║ 3. Нажмите 'Create Domain'                                ║${NC}"
+            echo -e "${YELLOW}║ 4. Скопируйте показанный ТОКЕН (длинная строка)          ║${NC}"
+            echo -e "${YELLOW}╚════════════════════════════════════════════════════════════╝${NC}\n"
+    
+            read -p "Вставьте скопированный токен: " FREEMY_TOKEN
+            if [[ -z "$FREEMY_TOKEN" ]]; then
+                log_error "Токен не может быть пустым"
+            fi
+    
             DOMAIN="${FREEMY_NAME}.freemyip.com"
             IP=$(curl -s4 ifconfig.me || curl -s4 icanhazip.com)
-            
-            log_info "Регистрируем домен $DOMAIN с IP $IP..."
-            RESPONSE=$(curl -s "https://freemyip.com/update?domain=${DOMAIN}")
-            
-            # Проверяем ответ (может быть JSON или текст)
-            if echo "$RESPONSE" | grep -q '"status":"success"'; then
-                log_success "Домен $DOMAIN успешно зарегистрирован"
-                # Сохраняем токен для будущих обновлений
-                TOKEN=$(echo "$RESPONSE" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+    
+            log_info "Обновляем IP $IP для $DOMAIN ..."
+            RESPONSE=$(curl -s "https://freemyip.com/update?domain=${DOMAIN}&token=${FREEMY_TOKEN}")
+        
+            # Проверяем успешность обновления
+            if echo "$RESPONSE" | grep -q "OK" || echo "$RESPONSE" | grep -q "updated"; then
+                log_success "Домен $DOMAIN успешно настроен"
                 echo "Домен: $DOMAIN" > /root/freemyip.txt
-                echo "Токен: $TOKEN" >> /root/freemyip.txt
-                log_info "Токен сохранён в /root/freemyip.txt (для обновления IP)"
+                echo "Токен: $FREEMY_TOKEN" >> /root/freemyip.txt
+                log_info "Токен сохранён в /root/freemyip.txt (для будущих обновлений)"
             else
-                log_error "Ошибка FreemyIP: $RESPONSE. Возможно, имя занято."
+                log_error "Ошибка FreemyIP: $RESPONSE. Проверьте токен и имя домена."
             fi
-            ;;
+        ;;
         *)
             # Свой домен
             read -p "Введите ваш домен (например, portal.example.com): " DOMAIN
