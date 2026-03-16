@@ -33,11 +33,4 @@
 ### Установка (3–5 минут)
 
 ```bash
-# 1. Скачиваем скрипт
-wget https://raw.githubusercontent.com/MAX-TAC/VLESS-XHTTP-REALITY-SHADOWSOCKS-HYSTERIA2-/main/install.sh -O install-node.sh
-
-# 2. Делаем исполняемым
-chmod +x install-node.sh
-
-# 3. Запускаем
-sudo bash install-node.sh
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/MAX-TAC/VLESS-XHTTP-REALITY-SHADOWSOCKS-HYSTERIA2-/main/install.sh)"
