@@ -115,84 +115,23 @@ check_prerequisites() {
 # ----------------------------- Выбор домена (свой или DuckDNS) ----------------
 choose_domain() {
     log_stage "НАСТРОЙКА ДОМЕНА"
-    echo -e "${ARROW} Выберите способ задания домена:"
-    echo "   1) Ввести свой домен (например, vpn.example.com)"
-    echo "   2) Сгенерировать бесплатный поддомен через DuckDNS (требуется регистрация)"
-    echo "   3) Сгенерировать домен через FreemyIP (без регистрации)"
-    read -p "Ваш выбор [1/2/3]: " domain_choice
+    echo -e "${ARROW} Введите ваш домен, который уже указывает на IP этого сервера."
+    echo -e "   Например: vpn.example.com или portal.example.com"
+    read -p "Домен: " DOMAIN
 
-    case $domain_choice in
-        2)
-            # DuckDNS (как в вашем скрипте)
-            log_info "Генерация через DuckDNS"
-            read -p "Введите ваш DuckDNS токен: " DUCK_TOKEN
-            read -p "Желаемое имя поддомена: " DUCK_SUBDOMAIN
-            if [[ -z "$DUCK_TOKEN" || -z "$DUCK_SUBDOMAIN" ]]; then
-                log_error "Токен и поддомен не могут быть пустыми"
-            fi
-            IP=$(curl -s4 ifconfig.me || curl -s4 icanhazip.com)
-            log_info "Обновляем IP $IP для $DUCK_SUBDOMAIN.duckdns.org ..."
-            RESPONSE=$(curl -s "https://www.duckdns.org/update?domains=${DUCK_SUBDOMAIN}&token=${DUCK_TOKEN}&ip=${IP}")
-            if [[ "$RESPONSE" != "OK" ]]; then
-                log_error "Ошибка DuckDNS: ответ '$RESPONSE'"
-            fi
-            DOMAIN="${DUCK_SUBDOMAIN}.duckdns.org"
-            log_success "Домен $DOMAIN успешно настроен"
-            ;;
-        3)  
-            log_info "Генерация домена через FreemyIP (с токеном)"
-            read -p "Желаемое имя поддомена (например myvpn): " FREEMY_NAME
-            if [[ -z "$FREEMY_NAME" || ! "$FREEMY_NAME" =~ ^[a-zA-Z0-9-]+$ ]]; then
-                log_error "Имя должно содержать только буквы, цифры и дефис"
-            fi
-    
-            # Важно: сначала нужно зарегистрировать домен через браузер
-            echo -e "\n${YELLOW}╔════════════════════════════════════════════════════════════╗${NC}"
-            echo -e "${YELLOW}║      ДЕЙСТВИЕ ТРЕБУЕТСЯ В БРАУЗЕРЕ                       ║${NC}"
-            echo -e "${YELLOW}╠════════════════════════════════════════════════════════════╣${NC}"
-            echo -e "${YELLOW}║ 1. Откройте сайт https://freemyip.com                     ║${NC}"
-            echo -e "${YELLOW}║ 2. В поле 'Domain' введите: ${FREEMY_NAME}               ║${NC}"
-            echo -e "${YELLOW}║ 3. Нажмите 'Create Domain'                                ║${NC}"
-            echo -e "${YELLOW}║ 4. Скопируйте показанный ТОКЕН (длинная строка)          ║${NC}"
-            echo -e "${YELLOW}╚════════════════════════════════════════════════════════════╝${NC}\n"
-    
-            read -p "Вставьте скопированный токен: " FREEMY_TOKEN
-            if [[ -z "$FREEMY_TOKEN" ]]; then
-                log_error "Токен не может быть пустым"
-            fi
-    
-            DOMAIN="${FREEMY_NAME}.freemyip.com"
-            IP=$(curl -s4 ifconfig.me || curl -s4 icanhazip.com)
-    
-            log_info "Обновляем IP $IP для $DOMAIN ..."
-            RESPONSE=$(curl -s "https://freemyip.com/update?domain=${DOMAIN}&token=${FREEMY_TOKEN}")
-        
-            # Проверяем успешность обновления
-            if echo "$RESPONSE" | grep -q "OK" || echo "$RESPONSE" | grep -q "updated"; then
-                log_success "Домен $DOMAIN успешно настроен"
-                echo "Домен: $DOMAIN" > /root/freemyip.txt
-                echo "Токен: $FREEMY_TOKEN" >> /root/freemyip.txt
-                log_info "Токен сохранён в /root/freemyip.txt (для будущих обновлений)"
-            else
-                log_error "Ошибка FreemyIP: $RESPONSE. Проверьте токен и имя домена."
-            fi
-        ;;
-        *)
-            # Свой домен
-            read -p "Введите ваш домен (например, portal.example.com): " DOMAIN
-            if [[ -z "$DOMAIN" ]]; then
-                log_error "Домен не может быть пустым"
-            fi
-            if ! [[ "$DOMAIN" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
-                log_error "Неверный формат домена"
-            fi
-            if ! getent hosts "$DOMAIN" &>/dev/null; then
-                log_warning "Домен $DOMAIN не резолвится. Убедитесь, что DNS запись настроена."
-            else
-                log_success "Домен $DOMAIN резолвится корректно"
-            fi
-            ;;
-    esac
+    if [[ -z "$DOMAIN" ]]; then
+        log_error "Домен не может быть пустым"
+    fi
+    # Простейшая проверка формата домена
+    if ! [[ "$DOMAIN" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+        log_error "Неверный формат домена"
+    fi
+    # Проверка резолвинга (опционально)
+    if ! getent hosts "$DOMAIN" &>/dev/null; then
+        log_warning "Домен $DOMAIN не резолвится. Убедитесь, что DNS запись настроена и распространилась."
+    else
+        log_success "Домен $DOMAIN резолвится корректно"
+    fi
 }
 
 # ----------------------------- Определение активного сетевого интерфейса -----
