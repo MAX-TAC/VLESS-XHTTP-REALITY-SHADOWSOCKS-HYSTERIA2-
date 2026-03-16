@@ -254,13 +254,15 @@ EOF
 systemctl daemon-reload
 systemctl enable --now xray
 
-# 8. Hysteria2
+# Hysteria2
 log_info "Установка Hysteria2..."
 HY_VER=$(curl -s https://api.github.com/repos/apernet/hysteria/releases/latest | jq -r .tag_name)
 wget -q "https://github.com/apernet/hysteria/releases/download/${HY_VER}/hysteria-linux-amd64" -O /usr/local/bin/hysteria
 chmod +x /usr/local/bin/hysteria
 
 OBFS_PASS=$(openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c 16)
+
+mkdir -p /etc/hysteria   # ← вот эта строка решает проблему
 
 cat > /etc/hysteria/config.yaml << EOF
 listen: :443
@@ -282,6 +284,7 @@ obfs:
 masquerade: https://${DOMAIN}
 EOF
 
+# systemd для Hysteria2 (оставь как было)
 cat > /etc/systemd/system/hysteria.service << 'EOF'
 [Unit]
 Description=Hysteria2 Server
@@ -293,10 +296,11 @@ LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 EOF
+
 systemctl daemon-reload
 systemctl enable --now hysteria
 
-# 9. Сохранение ключей и ссылок
+# Сохранение ключей и ссылок
 mkdir -p /root/node-keys
 IP=$(curl -s4 icanhazip.com || echo "YOUR_IP")
 
