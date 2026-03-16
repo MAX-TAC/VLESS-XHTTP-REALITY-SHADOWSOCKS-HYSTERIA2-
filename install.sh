@@ -2,7 +2,9 @@
 # =============================================================================
 # NODE INSTALLER — Xray + Hysteria2 + Nginx (фейковая страница логина)
 # Один пользователь для VLESS-XHTTP-REALITY + Shadowsocks-2022 + Hysteria2
-# Сертификат получает через --webroot (без конфликта с Nginx)
+# Сертификат получает через --webroot
+# Пароли SS — чистый base64 без изменений
+# pbk в VLESS — это Password из xray x25519
 # =============================================================================
 
 set -e
@@ -27,7 +29,7 @@ log_info "Установка зависимостей..."
 apt update && apt upgrade -y -qq
 apt install -y nginx curl wget unzip jq openssl uuid-runtime certbot python3-certbot-nginx cron ufw -qq
 
-# Открываем необходимые порты (если ufw активен)
+# Открываем порты
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
     ufw allow 80/tcp
     ufw allow 443/tcp
@@ -43,7 +45,7 @@ read -p "Email для Let's Encrypt: " EMAIL
 
 [ -z "$DOMAIN" ] || [ -z "$EMAIL" ] && log_error "Домен и email обязательны"
 
-# 3. Создаём фейковую страницу логина
+# 3. Фейковая страница
 mkdir -p /var/www/fake
 cat > /var/www/fake/index.html << 'EOF'
 <!DOCTYPE html>
@@ -78,8 +80,8 @@ EOF
 
 chmod -R 755 /var/www/fake
 
-# 4. Временный Nginx только на 80
-log_info "Запускаем Nginx только на порту 80 для получения сертификата..."
+# 4. Nginx на 80 для Certbot
+log_info "Запускаем Nginx только на порту 80..."
 cat > /etc/nginx/sites-available/fake << EOF
 server {
     listen 80;
@@ -97,10 +99,10 @@ EOF
 ln -sf /etc/nginx/sites-available/fake /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
 
-nginx -t || log_error "Nginx не прошёл проверку на 80 порту"
+nginx -t || log_error "Nginx не прошёл проверку на 80"
 systemctl restart nginx || log_error "Не удалось запустить Nginx на 80"
 
-# 5. Получаем сертификат через webroot
+# 5. Сертификат
 log_info "Получаем сертификат через webroot..."
 certbot certonly --webroot \
   -w /var/www/fake \
@@ -108,14 +110,14 @@ certbot certonly --webroot \
   --email "${EMAIL}" \
   --agree-tos \
   --non-interactive \
-  --no-eff-email || log_error "Certbot webroot не сработал. Лог: tail -n 50 /var/log/letsencrypt/letsencrypt.log"
+  --no-eff-email || log_error "Certbot ошибка. Лог: tail -n 50 /var/log/letsencrypt/letsencrypt.log"
 
 [ ! -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ] && log_error "Сертификат не найден"
 
 log_success "Сертификат получен!"
 
-# 6. Добавляем HTTPS в Nginx
-log_info "Добавляем HTTPS в конфиг Nginx..."
+# 6. HTTPS в Nginx
+log_info "Добавляем HTTPS..."
 cat > /etc/nginx/sites-available/fake << EOF
 server {
     listen 80;
@@ -142,7 +144,7 @@ EOF
 nginx -t || log_error "Nginx с HTTPS не прошёл проверку"
 systemctl restart nginx || log_error "Не удалось запустить Nginx с HTTPS"
 
-log_success "Nginx + fake login на https://${DOMAIN} готов"
+log_success "Nginx готов"
 
 # 7. Xray
 log_info "Установка Xray..."
@@ -153,46 +155,40 @@ unzip -qo /tmp/xray.zip -d /usr/local/bin/ xray
 chmod +x /usr/local/bin/xray
 rm -f /tmp/xray.zip
 
-# Reality ключи
+# Reality ключи — берём PrivateKey и Password (pbk = Password)
 xray_keys=$(xray x25519 2>/dev/null)
-PRIVATE_KEY=$(echo "$xray_keys" | grep Private | awk '{print $2}')
-PUBLIC_KEY=$(echo "$xray_keys" | grep Public | awk '{print $2}')
+PRIVATE_KEY=$(echo "$xray_keys" | grep -oP 'PrivateKey: \K\S+')
+PUBLIC_KEY=$(echo "$xray_keys" | grep -oP 'Password: \K\S+')   # Это и есть pbk
 SHORT_ID=$(openssl rand -hex 8)
 
-# Генерация 32-байтовых ключей для Shadowsocks 2022
-generate_2022_key() {
-    openssl rand -base64 32 | tr -d '\n='
-}
-
-# Настройки Xray
+# Настройки
 echo ""
 log_info "=== Настройки Xray ==="
-read -p "SNI для Reality (github.com, www.microsoft.com и т.п.): " SNI
-read -p "Path для XHTTP (/ или /api/...): " XHTTP_PATH
-read -p "Порт Shadowsocks (8443, 2083 и т.п.): " SS_PORT
+read -p "SNI для Reality: " SNI
+read -p "Path для XHTTP: " XHTTP_PATH
+read -p "Порт Shadowsocks: " SS_PORT
 while [[ ! "$SS_PORT" =~ ^[0-9]+$ || "$SS_PORT" -lt 1024 || "$SS_PORT" -gt 65535 ]]; do
-    log_warning "Порт должен быть 1024–65535"
+    log_warning "Порт 1024–65535"
     read -p "Порт Shadowsocks: " SS_PORT
 done
 
-# Пользователь
 echo ""
-log_info "=== Создаём одного пользователя ==="
-read -p "Имя пользователя (a-z0-9_): " USERNAME
+log_info "=== Пользователь ==="
+read -p "Имя пользователя: " USERNAME
 [[ ! "$USERNAME" =~ ^[a-zA-Z0-9_]+$ ]] && log_error "Неверное имя"
 
 UUID=$(uuidgen)
 HY_PASS=$(openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c 16)
-SS_SERVER_PASS=$(generate_2022_key)
-SS_USER_PASS=$(generate_2022_key)
+SS_SERVER_PASS=$(openssl rand -base64 32)
+SS_USER_PASS=$(openssl rand -base64 32)
 
 log_success "Пользователь: ${USERNAME}"
-log_info "UUID ............ ${UUID}"
-log_info "Hysteria2 pass .. ${HY_PASS}"
-log_info "SS server pass .. ${SS_SERVER_PASS}"
-log_info "SS user pass .... ${SS_USER_PASS}"
+log_info "UUID: ${UUID}"
+log_info "Hysteria2 pass: ${HY_PASS}"
+log_info "SS server pass: ${SS_SERVER_PASS}"
+log_info "SS user pass: ${SS_USER_PASS}"
 
-# Xray конфиг
+# Xray config
 cat > /etc/xray/config.json << EOF
 {
   "log": {"loglevel": "warning"},
@@ -308,22 +304,21 @@ EOF
 systemctl daemon-reload
 systemctl enable --now hysteria
 
-# Открываем порт Shadowsocks и UDP 443
+# Открываем порт SS
 ufw allow "${SS_PORT}"/tcp || true
-ufw allow 443/udp || true
 ufw reload || true
 
-# 9. Сохранение ключей и ссылок
+# 9. Ссылки
 mkdir -p /root/node-keys
 IP=$(curl -s4 icanhazip.com || echo "YOUR_IP")
 
 cat > /root/node-keys/credentials.txt << EOF
 Пользователь: ${USERNAME}
 
-VLESS (полная ссылка):
+VLESS:
 vless://${UUID}@${IP}:4433?type=xhttp&security=reality&pbk=${PUBLIC_KEY}&fp=chrome&sni=${SNI}&sid=${SHORT_ID}&mode=stream-one&path=${XHTTP_PATH}#VLESS-XHTTP-REALITY-${USERNAME}
 
-Shadowsocks (2022-blake3-aes-256-gcm):
+Shadowsocks:
 ss://2022-blake3-aes-256-gcm:${SS_SERVER_PASS}@${IP}:${SS_PORT}?password=${SS_USER_PASS}#SS-2022-256-${USERNAME}
 
 Hysteria2:
@@ -331,10 +326,10 @@ hysteria2://${USERNAME}:${HY_PASS}@${IP}:443/?insecure=0&sni=${DOMAIN}&obfs=sala
 EOF
 
 log_success "Установка завершена!"
-log_info "Ключи и ссылки сохранены в:"
+log_info "Ключи и ссылки:"
 cat /root/node-keys/credentials.txt
 
-log_info "Проверьте статус сервисов:"
+log_info "Проверьте статус:"
 log_info "systemctl status xray"
 log_info "systemctl status hysteria"
-log_info "Рекомендуется перезагрузить сервер: reboot"
+log_info "reboot рекомендуется"
