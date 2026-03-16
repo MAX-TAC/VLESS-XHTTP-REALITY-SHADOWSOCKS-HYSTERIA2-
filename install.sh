@@ -185,9 +185,37 @@ read -p "Имя пользователя: " USERNAME
 [[ ! "$USERNAME" =~ ^[a-zA-Z0-9_]+$ ]] && log_error "Неверное имя"
 
 UUID=$(uuidgen)
-HY_PASS=$(openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c 16)
-SS_SERVER_PASS=$(openssl rand -base64 32)
-SS_USER_PASS=$(openssl rand -base64 32)
+HY_PASS=$(openssl rand -hex 16)
+
+generate_ss_server_pass() {
+    local PASS
+    while true; do
+        PASS=$(openssl rand -base64 32 | tr -d '\n')
+        # Проверяем, что нет нежелательных символов
+        if [[ "$PASS" != *"/"* && "$PASS" != *"+"* ]]; then
+            echo "$PASS"
+            return 0
+        fi
+        # Если попали сюда, значит есть / или + – повторяем цикл
+    done
+}
+
+SS_SERVER_PASS=$(generate_ss_server_pass)
+
+generate_ss_user_pass() {
+    local PASS
+    while true; do
+        PASS=$(openssl rand -base64 32 | tr -d '\n')
+        # Проверяем, что нет нежелательных символов
+        if [[ "$PASS" != *"/"* && "$PASS" != *"+"* ]]; then
+            echo "$PASS"
+            return 0
+        fi
+        # Если попали сюда, значит есть / или + – повторяем цикл
+    done
+}
+
+SS_USER_PASS=$(generate_ss_user_pass)
 
 log_success "Пользователь: ${USERNAME}"
 log_info "UUID: ${UUID}"
@@ -274,7 +302,7 @@ HY_VER=$(curl -s https://api.github.com/repos/apernet/hysteria/releases/latest |
 wget -q "https://github.com/apernet/hysteria/releases/download/${HY_VER}/hysteria-linux-amd64" -O /usr/local/bin/hysteria
 chmod +x /usr/local/bin/hysteria
 
-OBFS_PASS=$(openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c 16)
+OBFS_PASS=$(openssl rand -hex 16)
 
 mkdir -p /etc/hysteria
 
