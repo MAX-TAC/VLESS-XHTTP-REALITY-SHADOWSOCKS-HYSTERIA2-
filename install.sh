@@ -117,70 +117,67 @@ choose_domain() {
     log_stage "НАСТРОЙКА ДОМЕНА"
     echo -e "${ARROW} Выберите способ задания домена:"
     echo "   1) Ввести свой домен (например, vpn.example.com)"
-    echo "   2) Сгенерировать бесплатный поддомен через DuckDNS"
-    echo "   3)Сгенерировать бесплатный поддомен через FreemyIP"
-    read -p "Выберите ваш вариант [1-3]: " domain_choice
+    echo "   2) Сгенерировать бесплатный поддомен через DuckDNS (требуется регистрация)"
+    echo "   3) Сгенерировать домен через FreemyIP (без регистрации)"
+    read -p "Ваш выбор [1/2/3]: " domain_choice
 
     case $domain_choice in
         2)
+            # DuckDNS (как в вашем скрипте)
             log_info "Генерация через DuckDNS"
-            read -p "Введите ваш DuckDNS токен (см. https://www.duckdns.org): " DUCK_TOKEN
-            read -p "Желаемое имя поддомена (только латиница, например myvpn): " DUCK_SUBDOMAIN
+            read -p "Введите ваш DuckDNS токен: " DUCK_TOKEN
+            read -p "Желаемое имя поддомена: " DUCK_SUBDOMAIN
             if [[ -z "$DUCK_TOKEN" || -z "$DUCK_SUBDOMAIN" ]]; then
                 log_error "Токен и поддомен не могут быть пустыми"
             fi
-            # Проверка, что поддомен доступен и обновление IP
             IP=$(curl -s4 ifconfig.me || curl -s4 icanhazip.com)
-            if [[ -z "$IP" ]]; then
-                log_error "Не удалось определить внешний IP"
-            fi
             log_info "Обновляем IP $IP для $DUCK_SUBDOMAIN.duckdns.org ..."
             RESPONSE=$(curl -s "https://www.duckdns.org/update?domains=${DUCK_SUBDOMAIN}&token=${DUCK_TOKEN}&ip=${IP}")
             if [[ "$RESPONSE" != "OK" ]]; then
                 log_error "Ошибка DuckDNS: ответ '$RESPONSE'"
             fi
             DOMAIN="${DUCK_SUBDOMAIN}.duckdns.org"
-            log_success "Домен $DOMAIN успешно настроен и указывает на ваш IP"
+            log_success "Домен $DOMAIN успешно настроен"
             ;;
-        *)
-            read -p "Введите ваш домен (например, portal.example.com): " DOMAIN
-            if [[ -z "$DOMAIN" ]]; then
-                log_error "Домен не может быть пустым"
-            fi
-            # Простейшая проверка формата домена
-            if ! [[ "$DOMAIN" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
-                log_error "Неверный формат домена"
-            fi
-            # Проверка резолвинга (опционально)
-            if ! getent hosts "$DOMAIN" &>/dev/null; then
-                log_warning "Домен $DOMAIN не резолвится. Убедитесь, что DNS запись настроена."
-            else
-                log_success "Домен $DOMAIN резолвится корректно"
-            fi
-            ;;
-         3)  
-            log_info "Генерация домена через FreemyIP (без регистрации)"
+        3)
+            # FreemyIP (без регистрации)
+            log_info "Генерация через FreemyIP"
             read -p "Желаемое имя поддомена (только латиница, например myvpn): " FREEMY_NAME
             if [[ -z "$FREEMY_NAME" || ! "$FREEMY_NAME" =~ ^[a-zA-Z0-9-]+$ ]]; then
                 log_error "Имя должно содержать только буквы, цифры и дефис"
             fi
-    
+            
             DOMAIN="${FREEMY_NAME}.freemyip.com"
             IP=$(curl -s4 ifconfig.me || curl -s4 icanhazip.com)
             
             log_info "Регистрируем домен $DOMAIN с IP $IP..."
-    
-            # Запрос к API FreemyIP
-            RESPONSE=$(curl -s "https://freemyip.com/update?domain=${DOMAIN}&token=${TOKEN:-''}")
-    
-            # Проверяем ответ
-            if echo "$RESPONSE" | grep -q "success"; then
+            RESPONSE=$(curl -s "https://freemyip.com/update?domain=${DOMAIN}")
+            
+            # Проверяем ответ (может быть JSON или текст)
+            if echo "$RESPONSE" | grep -q '"status":"success"'; then
                 log_success "Домен $DOMAIN успешно зарегистрирован"
-                # Сохраняем токен, если нужно обновлять IP позже
-                TOKEN=$(echo "$RESPONSE" | grep -o 'token=[^&]*' | cut -d= -f2)
-                echo "Токен для обновлений: $TOKEN" >> /root/freemyip_token.txt
+                # Сохраняем токен для будущих обновлений
+                TOKEN=$(echo "$RESPONSE" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+                echo "Домен: $DOMAIN" > /root/freemyip.txt
+                echo "Токен: $TOKEN" >> /root/freemyip.txt
+                log_info "Токен сохранён в /root/freemyip.txt (для обновления IP)"
             else
-                log_error "Ошибка FreemyIP: $RESPONSE"
+                log_error "Ошибка FreemyIP: $RESPONSE. Возможно, имя занято."
+            fi
+            ;;
+        *)
+            # Свой домен
+            read -p "Введите ваш домен (например, portal.example.com): " DOMAIN
+            if [[ -z "$DOMAIN" ]]; then
+                log_error "Домен не может быть пустым"
+            fi
+            if ! [[ "$DOMAIN" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+                log_error "Неверный формат домена"
+            fi
+            if ! getent hosts "$DOMAIN" &>/dev/null; then
+                log_warning "Домен $DOMAIN не резолвится. Убедитесь, что DNS запись настроена."
+            else
+                log_success "Домен $DOMAIN резолвится корректно"
             fi
             ;;
     esac
