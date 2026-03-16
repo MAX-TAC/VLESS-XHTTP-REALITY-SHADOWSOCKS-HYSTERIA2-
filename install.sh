@@ -296,11 +296,21 @@ EOF
 systemctl daemon-reload
 systemctl enable --now xray
 
-# 8. Hysteria2
+# Установка Hysteria2
 log_info "Установка Hysteria2..."
 HY_VER=$(curl -s https://api.github.com/repos/apernet/hysteria/releases/latest | jq -r .tag_name)
 wget -q "https://github.com/apernet/hysteria/releases/download/${HY_VER}/hysteria-linux-amd64" -O /usr/local/bin/hysteria
 chmod +x /usr/local/bin/hysteria
+
+# Определение активного сетевого интерфейса 
+log_info "Определение активного сетевого интерфейса..."
+ACTIVE_INTERFACE=$(ip -br link | awk '$2 == "UP" && $1 != "lo" {print $1; exit}')
+if [ -z "$ACTIVE_INTERFACE" ]; then
+    log_warning "Активный сетевой интерфейс не найден, будет использован eth0"
+    ACTIVE_INTERFACE="eth0"
+else
+    log_success "Active interface: $ACTIVE_INTERFACE"
+fi
 
 OBFS_PASS=$(openssl rand -hex 16)
 
@@ -323,7 +333,35 @@ obfs:
   salamander:
     password: ${OBFS_PASS}
 
-masquerade: https://${DOMAIN}
+masquerade:
+  type: proxy
+  proxy:
+    url: https://${DOMAIN}
+    insecure: false
+    rewriteHost: true
+
+quic:
+  initStreamReceiveWindow: 8388608 
+  maxStreamReceiveWindow: 8388608 
+  initConnReceiveWindow: 20971520 
+  maxConnReceiveWindow: 20971520 
+  maxIdleTimeout: 30s 
+  maxIncomingStreams: 1024 
+  disablePathMTUDiscovery: false
+
+ignoreClientBandwidth: false
+  
+speedTest: false
+disableUDP: false
+udpIdleTimeout: 60s
+
+outbounds:
+  - name: outbound_direct
+    type: direct
+    direct:
+      mode: auto 
+      bindDevice: ${ACTIVE_INTERFACE} 
+      fastOpen: false 
 EOF
 
 cat > /etc/systemd/system/hysteria.service << 'EOF'
