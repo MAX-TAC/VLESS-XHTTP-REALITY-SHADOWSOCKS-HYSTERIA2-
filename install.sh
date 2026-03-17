@@ -748,6 +748,87 @@ EOF
     INSTALL_STEPS+=("hysteria")
 }
 
+# ----------------------------- Настройка авто-перезагрузки --------------------
+setup_auto_reboot() {
+    echo ""
+    log_stage "НАСТРОЙКА АВТОМАТИЧЕСКОЙ ПЕРЕЗАГРУЗКИ"
+    
+    # Определяем текущую таймзону
+    current_timezone=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null)
+    if [[ -z "$current_timezone" ]]; then
+        current_timezone="не определена"
+    fi
+    
+    echo -e "${ARROW} Текущий часовой пояс: ${CYAN}${current_timezone}${NC}"
+    if [[ "$current_timezone" != "Europe/Moscow" && "$current_timezone" != "MSK" ]]; then
+        read -p "Хотите сменить на Московское время (MSK)? (y/n): " change_tz
+        if [[ "$change_tz" =~ ^[YyДд] ]]; then
+            timedatectl set-timezone Europe/Moscow && log_success "Часовой пояс изменён на MSK" || log_warning "Не удалось сменить часовой пояс"
+            current_timezone="Europe/Moscow"
+        fi
+    fi
+    
+    # Меню выбора периодичности (4 варианта)
+    echo -e "\n${ARROW} Выберите периодичность перезагрузки:"
+    echo "   1) Не создавать задачу"
+    echo "   2) Каждый день"
+    echo "   3) Каждые 3 дня"
+    echo "   4) Раз в 7 дней (по пятницам)"
+    read -p "Ваш выбор [1/2/3/4]: " period_choice
+    
+    # Если выбран пункт 1, выходим
+    if [[ "$period_choice" == "1" ]]; then
+        log_info "Автоматическая перезагрузка не будет настроена."
+        return
+    fi
+    
+    # Запрос времени в 24-часовом формате
+    while true; do
+        read -p "Введите время перезагрузки в 24-часовом формате (ЧЧ:ММ), например 04:30 или 16:00: " reboot_time
+        reboot_time=$(echo "$reboot_time" | tr -d ' ')
+        if [[ "$reboot_time" =~ ^([0-9]{1,2}):([0-9]{2})$ ]]; then
+            hour=${BASH_REMATCH[1]}
+            minute=${BASH_REMATCH[2]}
+            if (( hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 )); then
+                break
+            else
+                log_warning "Неверное время: часы должны быть 0-23, минуты 0-59."
+            fi
+        else
+            log_warning "Неверный формат. Используйте ЧЧ:ММ, например 04:30."
+        fi
+    done
+    
+    # Формирование cron-записи в зависимости от выбранной периодичности
+    case $period_choice in
+        2) # каждый день
+            cron_expr="$minute $hour * * *"
+            desc="ежедневно в ${hour}:${minute}"
+            ;;
+        3) # каждые 3 дня
+            cron_expr="$minute $hour */3 * *"
+            desc="каждые 3 дня в ${hour}:${minute} (по числам месяца)"
+            ;;
+        4) # раз в 7 дней (пятница)
+            cron_expr="$minute $hour * * 5"   # 5 = пятница
+            desc="еженедельно по пятницам в ${hour}:${minute}"
+            ;;
+        *)
+            log_warning "Неверный выбор, перезагрузка не настроена."
+            return
+            ;;
+    esac
+    
+    # Добавляем задачу в crontab, избегая дублирования
+    crontab_current=$(crontab -l 2>/dev/null || true)
+    if echo "$crontab_current" | grep -q "/sbin/reboot"; then
+        log_warning "Задача на перезагрузку уже существует в crontab. Пропускаем."
+    else
+        (echo "$crontab_current"; echo "$cron_expr /sbin/reboot") | crontab -
+        log_success "Добавлена задача cron: $cron_expr /sbin/reboot (перезагрузка $desc)"
+    fi
+}
+
 # ----------------------------- Вывод результатов -----------------------------
 show_results() {
     log_stage "УСТАНОВКА ЗАВЕРШЕНА УСПЕШНО"
@@ -796,6 +877,7 @@ main() {
     get_certificate
     install_xray
     install_hysteria
+    setup_auto_reboot
     show_results
 }
 
