@@ -768,29 +768,20 @@ Hysteria2:
 hysteria2://${USERNAME}:${HY_PASS}@${IP}:443/?insecure=0&sni=${DOMAIN}&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2
 EOF
 
-    # Красивый вывод в рамке с содержимым файла
-    local box_width=70
-    print_line() { printf "${GREEN}│${NC} %-${box_width}s ${GREEN}│${NC}\n" "$1"; }
-    echo -e "${GREEN}┌─$(printf '─%.0s' $(seq 1 $box_width))─┐${NC}"
-    print_line "⚡ Ссылки и ключи (сохранены также в /root/node-keys/credentials.txt)"
-    print_line ""
-    # Читаем файл и выводим каждую строку внутри рамки
-    while IFS= read -r line; do
-        # Пустые строки оставляем пустыми
-        if [[ -z "$line" ]]; then
-            print_line ""
-        else
-            print_line "$line"
-        fi
-    done < /root/node-keys/credentials.txt
-    print_line ""
-    print_line "Проверка статуса служб:"
-    print_line "  systemctl status xray"
-    print_line "  systemctl status hysteria"
-    print_line "  systemctl status nginx"
-    print_line ""
-    print_line "Лог установки: $LOG_FILE"
-    echo -e "${GREEN}└─$(printf '─%.0s' $(seq 1 $box_width))─┘${NC}"
+    echo -e "\n${GREEN}════════════════════════════════════════════════════════════${NC}"
+    echo -e "${WHITE}   Ссылки и ключи (сохранены в /root/node-keys/credentials.txt)${NC}"
+    echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}\n"
+    
+    # Выводим содержимое файла (можно с подсветкой)
+    cat /root/node-keys/credentials.txt
+    
+    echo -e "\n${GREEN}════════════════════════════════════════════════════════════${NC}"
+    echo -e "${WHITE}   Проверка статуса служб:${NC}"
+    echo -e "   ${CYAN}systemctl status xray${NC}"
+    echo -e "   ${CYAN}systemctl status hysteria${NC}"
+    echo -e "   ${CYAN}systemctl status nginx${NC}"
+    echo -e "\n${WHITE}   Лог установки: ${YELLOW}${LOG_FILE}${NC}"
+    echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}\n"
 
     log_success "Установка завершена! Рекомендуется перезагрузить сервер."
 }
