@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # Установщик Xray + Hysteria2 + Nginx (фейковая страница)
-# Модернизированная версия: тихий режим, информативный вывод, отказоустойчивость
+# Версия: жёлтые заголовки, вывод ключей в рамке
 # =============================================================================
 
 set -eEuo pipefail
@@ -10,7 +10,7 @@ trap 'cleanup_on_error $? $LINENO' ERR
 # ----------------------------- Цвета и функции вывода -------------------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
+YELLOW='\033[1;33m'           # Ярко-жёлтый для заголовков
 BLUE='\033[0;34m'
 MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
@@ -31,7 +31,7 @@ log_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[${CHECK_MARK} SUCCESS]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[! WARNING]${NC} $1"; }
 log_error()   { echo -e "${RED}[${CROSS_MARK} ERROR]${NC} $1"; exit 1; }
-log_stage()   { echo -e "\n${MAGENTA}════════════════════════════════════════════════════════════${NC}"; echo -e "${WHITE}   $1${NC}"; echo -e "${MAGENTA}════════════════════════════════════════════════════════════${NC}\n"; }
+log_stage()   { echo -e "\n${YELLOW}════════════════════════════════════════════════════════════${NC}"; echo -e "${WHITE}   $1${NC}"; echo -e "${YELLOW}════════════════════════════════════════════════════════════${NC}\n"; }
 
 # ----------------------------- Переменные для отката -------------------------
 BACKUP_DIR="/root/backups/$(date +%Y%m%d-%H%M%S)"
@@ -46,7 +46,6 @@ cleanup_on_error() {
     local line_no=$2
     log_warning "Скрипт прерван на строке $line_no с кодом $exit_code. Запуск отката..."
 
-    # Откат в обратном порядке
     for step in "${INSTALL_STEPS[@]}"; do
         case $step in
             "deps")
@@ -112,7 +111,7 @@ check_prerequisites() {
     fi
 }
 
-# ----------------------------- Выбор домена (свой или DuckDNS) ----------------
+# ----------------------------- Ввод домена (только ручной) -------------------
 choose_domain() {
     log_stage "НАСТРОЙКА ДОМЕНА"
     echo -e "${ARROW} Введите ваш домен, который уже указывает на IP этого сервера."
@@ -184,7 +183,7 @@ setup_nginx() {
     log_info "Создание директории /var/www/fake"
     mkdir -p /var/www/fake
 
-    # Минимальная заглушка 
+    # Минимальная заглушка (пользователь заменит позже)
     cat > /var/www/fake/index.html << 'EOF'
 <!DOCTYPE html>
 <html lang="en">
@@ -524,7 +523,7 @@ install_xray() {
     log_success "Версия: $XRAY_VER"
 
     log_info "Загрузка Xray-core..."
-    wget -q --show-progress "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-linux-64.zip" -O /tmp/xray.zip || log_error "Ошибка загрузки Xray"
+    wget -q "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-linux-64.zip" -O /tmp/xray.zip || log_error "Ошибка загрузки Xray"
     log_info "Распаковка..."
     unzip -qo /tmp/xray.zip -d /usr/local/bin/ xray || log_error "Ошибка распаковки Xray"
     chmod +x /usr/local/bin/xray
@@ -676,7 +675,7 @@ install_hysteria() {
     log_success "Версия: $HY_VER"
 
     log_info "Загрузка Hysteria..."
-    wget -q --show-progress "https://github.com/apernet/hysteria/releases/download/${HY_VER}/hysteria-linux-amd64" -O /usr/local/bin/hysteria || log_error "Ошибка загрузки Hysteria"
+    wget -q "https://github.com/apernet/hysteria/releases/download/${HY_VER}/hysteria-linux-amd64" -O /usr/local/bin/hysteria || log_error "Ошибка загрузки Hysteria"
     chmod +x /usr/local/bin/hysteria
     log_success "Hysteria загружен"
 
@@ -755,6 +754,7 @@ show_results() {
     mkdir -p /root/node-keys
     IP=$(curl -s4 ifconfig.me || echo "YOUR_IP")
 
+    # Генерируем файл с ключами
     cat > /root/node-keys/credentials.txt << EOF
 Пользователь: ${USERNAME}
 
@@ -768,15 +768,21 @@ Hysteria2:
 hysteria2://${USERNAME}:${HY_PASS}@${IP}:443/?insecure=0&sni=${DOMAIN}&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2
 EOF
 
-    # Красивый вывод в рамке
+    # Красивый вывод в рамке с содержимым файла
     local box_width=70
     print_line() { printf "${GREEN}│${NC} %-${box_width}s ${GREEN}│${NC}\n" "$1"; }
     echo -e "${GREEN}┌─$(printf '─%.0s' $(seq 1 $box_width))─┐${NC}"
-    print_line "⚡ Ссылки и ключи сохранены в /root/node-keys/credentials.txt"
+    print_line "⚡ Ссылки и ключи (сохранены также в /root/node-keys/credentials.txt)"
     print_line ""
-    print_line "VLESS:     vless://... (смотри в файле)"
-    print_line "Shadowsocks: ss://... (смотри в файле)"
-    print_line "Hysteria2:  hysteria2://... (смотри в файле)"
+    # Читаем файл и выводим каждую строку внутри рамки
+    while IFS= read -r line; do
+        # Пустые строки оставляем пустыми
+        if [[ -z "$line" ]]; then
+            print_line ""
+        else
+            print_line "$line"
+        fi
+    done < /root/node-keys/credentials.txt
     print_line ""
     print_line "Проверка статуса служб:"
     print_line "  systemctl status xray"
