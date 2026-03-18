@@ -543,7 +543,8 @@ get_certificate() {
     log_stage "ПОЛУЧЕНИЕ SSL-СЕРТИФИКАТА LET'S ENCRYPT"
     
     # === Получаем домен: из аргумента ИЛИ из глобальной переменной ===
-    local domain="${1:-$DOMAIN}"
+    # Используем ${VAR:-} чтобы избежать ошибки с set -u
+    local domain="${1:-${DOMAIN:-}}"
     
     # === Критическая проверка: домен должен быть задан ===
     if [[ -z "$domain" ]]; then
@@ -553,17 +554,18 @@ get_certificate() {
     fi
     
     local webroot="/var/www/fake"
-    local cert_dir="/etc/letsencrypt/live/$domain"
+    local cert_dir="/etc/letsencrypt/live/${domain}"
     local certbot_cmd="certbot"
     
     # Проверяем, не получен ли сертификат уже
-    if [[ -f "$cert_dir/fullchain.pem" ]]; then
-        local expiry=$(openssl x509 -enddate -noout -in "$cert_dir/fullchain.pem" 2>/dev/null | cut -d= -f2)
-        log_info "Сертификат для $domain уже существует"
+    if [[ -f "${cert_dir}/fullchain.pem" ]]; then
+        local expiry=""
+        expiry=$(openssl x509 -enddate -noout -in "${cert_dir}/fullchain.pem" 2>/dev/null | cut -d= -f2) || true
+        log_info "Сертификат для ${domain} уже существует"
         log_info "Срок действия до: ${expiry:-неизвестно}"
         
         # Проверяем, не истекает ли скоро (менее 30 дней)
-        if openssl x509 -checkend $((30*24*60*60)) -noout -in "$cert_dir/fullchain.pem" 2>/dev/null; then
+        if openssl x509 -checkend $((30*24*60*60)) -noout -in "${cert_dir}/fullchain.pem" 2>/dev/null; then
             log_success "Сертификат действителен, пропускаем перевыпуск"
             return 0
         else
@@ -574,7 +576,7 @@ get_certificate() {
     # === Запрос email для регистрации в Let's Encrypt ===
     local certbot_email=""
     echo -e "\n➜ Для получения сертификата необходим email (для уведомлений об истечении):"
-    echo -e "   Пример: admin@$domain или your.name@example.com\n"
+    echo -e "   Пример: admin@${domain} или your.name@example.com\n"
     
     while [[ -z "$certbot_email" ]]; do
         read -r -p "Email: " certbot_email
@@ -592,21 +594,23 @@ get_certificate() {
     local certbot_mode="webroot"
     local certbot_args=()
     
-    # Проверяем, слушает ли nginx порт 80 и доступен ли .well-known
-    if ! curl -s --connect-timeout 5 "http://$domain/.well-known/acme-challenge/test" &>/dev/null; then
+    # Проверяем, доступен ли .well-known извне (с таймаутом)
+    if ! curl -s --connect-timeout 5 "http://${domain}/.well-known/acme-challenge/test" &>/dev/null; then
         log_warning "Webroot-проверка недоступна извне. Пробуем режим standalone..."
         
         # Останавливаем nginx, чтобы освободить порт 80 для standalone
-        if systemctl is-active --quiet nginx; then
+        if systemctl is-active --quiet nginx 2>/dev/null; then
             log_info "Остановка nginx для получения сертификата..."
             systemctl stop nginx
             certbot_mode="standalone"
         else
             log_error "Порт 80 недоступен для проверки Let's Encrypt."
             log_error "Проверьте:"
-            log_error "  • Домен $domain резолвится на этот IP: $(dig +short $domain 2>/dev/null || echo 'не удалось проверить')"
+            log_error "  • Домен ${domain} резолвится на этот IP: $(dig +short "${domain}" 2>/dev/null || echo 'не удалось проверить')"
             log_error "  • Порт 80 открыт в фаерволе: $(ufw status 2>/dev/null | grep 80 || echo 'ufw не активен')"
             log_error "  • Облачный фаервол (если есть) разрешает входящие на порт 80"
+            # Восстанавливаем nginx если останавливали
+            [[ "$certbot_mode" == "standalone" ]] && systemctl start nginx 2>/dev/null || true
             return 1
         fi
     fi
@@ -614,17 +618,17 @@ get_certificate() {
     # Формируем аргументы для certbot
     certbot_args+=(
         certonly
-        --"$certbot_mode"
-        -d "$domain"
-        --email "$certbot_email"
+        --"${certbot_mode}"
+        -d "${domain}"
+        --email "${certbot_email}"
         --agree-tos
         --non-interactive
         --quiet
     )
     
     if [[ "$certbot_mode" == "webroot" ]]; then
-        certbot_args+=(--webroot-path "$webroot")
-        log_info "Получение сертификата через webroot ($webroot)..."
+        certbot_args+=(--webroot-path "${webroot}")
+        log_info "Получение сертификата через webroot (${webroot})..."
     else
         log_info "Получение сертификата через standalone (порт 80)..."
     fi
@@ -644,9 +648,11 @@ get_certificate() {
             log_warning "Certbot завершился с кодом $exit_code"
             
             # Анализируем лог для точной диагностики
-            local latest_log=$(ls -t /var/log/letsencrypt/letsencrypt*.log 2>/dev/null | head -1)
+            local latest_log=""
+            latest_log=$(ls -t /var/log/letsencrypt/letsencrypt*.log 2>/dev/null | head -1) || true
             if [[ -n "$latest_log" ]]; then
-                local error_snippet=$(grep -iE "error|failed|unauthorized|timeout|connection refused" "$latest_log" | tail -3)
+                local error_snippet=""
+                error_snippet=$(grep -iE "error|failed|unauthorized|timeout|connection refused" "$latest_log" 2>/dev/null | tail -3) || true
                 if [[ -n "$error_snippet" ]]; then
                     log_error "Детали ошибки из лога:"
                     echo "$error_snippet" | sed 's/^/    /'
@@ -658,16 +664,16 @@ get_certificate() {
                 log_error "Не удалось получить сертификат после $max_attempts попыток."
                 
                 # Восстанавливаем nginx, если останавливали
-                if [[ "$certbot_mode" == "standalone" ]] && systemctl is-enabled --quiet nginx; then
+                if [[ "$certbot_mode" == "standalone" ]]; then
                     log_info "Запуск nginx..."
-                    systemctl start nginx
+                    systemctl start nginx 2>/dev/null || true
                 fi
                 
                 echo -e "\n[!] Возможные решения:"
-                echo "    1. Убедитесь, что домен $domain указывает на IP: $(hostname -I | awk '{print $1}')"
-                echo "    2. Проверьте, открыт ли порт 80: curl -I http://$domain"
+                echo "    1. Убедитесь, что домен ${domain} указывает на IP: $(hostname -I 2>/dev/null | awk '{print $1}')"
+                echo "    2. Проверьте, открыт ли порт 80: curl -I http://${domain}"
                 echo "    3. Временно отключите фаервол для теста: ufw disable && certbot ... && ufw enable"
-                echo "    4. Попробуйте вручную: certbot certonly --standalone -d $domain --email $certbot_email --agree-tos"
+                echo "    4. Попробуйте вручную: certbot certonly --standalone -d ${domain} --email ${certbot_email} --agree-tos"
                 return 1
             fi
             
@@ -676,6 +682,40 @@ get_certificate() {
             ((attempt++))
         fi
     done
+    
+    # === Финальная проверка и восстановление ===
+    
+    # Проверяем, что файлы сертификата появились
+    if [[ ! -f "${cert_dir}/fullchain.pem" ]] || [[ ! -f "${cert_dir}/privkey.pem" ]]; then
+        log_error "Файлы сертификата не найдены после успешного выполнения certbot!"
+        return 1
+    fi
+    
+    # Восстанавливаем nginx, если останавливали для standalone
+    if [[ "$certbot_mode" == "standalone" ]]; then
+        log_info "Восстановление работы nginx..."
+        systemctl start nginx 2>/dev/null || log_warning "Не удалось запустить nginx, проверьте вручную"
+    fi
+    
+    # Проверяем, что сертификат валиден
+    if openssl x509 -checkend 0 -noout -in "${cert_dir}/fullchain.pem" 2>/dev/null; then
+        local expiry=""
+        expiry=$(openssl x509 -enddate -noout -in "${cert_dir}/fullchain.pem" 2>/dev/null | cut -d= -f2) || true
+        log_success "Сертификат активен, истекает: ${expiry:-неизвестно}"
+    else
+        log_error "Получен невалидный сертификат!"
+        return 1
+    fi
+    
+    # Настраиваем автообновление (если ещё не настроено)
+    if ! crontab -l 2>/dev/null | grep -q "certbot renew" 2>/dev/null; then
+        log_info "Настройка автообновления сертификата..."
+        (crontab -l 2>/dev/null; echo "0 3 * * * ${certbot_cmd} renew --quiet --deploy-hook 'systemctl reload nginx'") | crontab - 2>/dev/null || true
+    fi
+    
+    log_success "SSL-сертификат настроен для ${domain}"
+    return 0
+}
     
     # === Финальная проверка и восстановление ===
     
