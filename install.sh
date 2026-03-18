@@ -1,263 +1,51 @@
 #!/bin/bash
 # =============================================================================
-# Установщик Xray + Hysteria2 + Nginx (фейковая страница)
-# Версия: жёлтые заголовки, вывод ключей в рамке
+# INSTALLER — Xray + Hysteria2 + Nginx (фейковая страница логина)
+# Один пользователь для VLESS-XHTTP-REALITY + Shadowsocks-2022 + Hysteria2
+# Сертификат получает через --webroot
 # =============================================================================
 
-set -eEuo pipefail
-trap 'cleanup_on_error $? $LINENO' ERR
+set -e
 
-# ----------------------------- Цвета и функции вывода -------------------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'           # Ярко-жёлтый для заголовков
+YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
-CYAN='\033[0;36m'
-WHITE='\033[1;37m'
 NC='\033[0m'
 
-# Символы
-CHECK_MARK="✔"
-CROSS_MARK="✗"
-ARROW="➜"
-CLOCK="⏳"
-
-# Логирование
-LOG_FILE="/var/log/vpn-setup.log"
-exec > >(tee -a "$LOG_FILE") 2>&1
-
 log_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_success() { echo -e "${GREEN}[${CHECK_MARK} SUCCESS]${NC} $1"; }
-log_warning() { echo -e "${YELLOW}[! WARNING]${NC} $1"; }
-log_error()   { echo -e "${RED}[${CROSS_MARK} ERROR]${NC} $1"; exit 1; }
-log_stage()   { echo -e "\n${YELLOW}════════════════════════════════════════════════════════════${NC}"; echo -e "${WHITE}   $1${NC}"; echo -e "${YELLOW}════════════════════════════════════════════════════════════${NC}\n"; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+log_error()   { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
-# ----------------------------- Переменные для отката -------------------------
-BACKUP_DIR="/root/backups/$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$BACKUP_DIR"
-INSTALL_STEPS=()          # Массив выполненных шагов для отката
-DOMAIN=""
-EMAIL="dummy@example.com" # Заглушка, не используется
+[ "$EUID" -ne 0 ] && log_error "Запускай от root: sudo bash $0"
 
-# ----------------------------- Функция отката при ошибке ---------------------
-cleanup_on_error() {
-    local exit_code=$1
-    local line_no=$2
-    log_warning "Скрипт прерван на строке $line_no с кодом $exit_code. Запуск отката..."
+log_info "=== Установка Xray + Hysteria2 + Nginx (fake login) ==="
 
-    for step in "${INSTALL_STEPS[@]}"; do
-        case $step in
-            "deps")
-                log_info "Удаление установленных пакетов (это может быть неполным)..."
-                apt remove --purge -y nginx certbot python3-certbot-nginx &>/dev/null || true
-                ;;
-            "nginx_fake")
-                log_info "Восстановление конфигурации Nginx..."
-                if [[ -f "${BACKUP_DIR}/nginx_default.bak" ]]; then
-                    cp "${BACKUP_DIR}/nginx_default.bak" /etc/nginx/sites-enabled/default 2>/dev/null || true
-                fi
-                rm -f /etc/nginx/sites-available/fake /etc/nginx/sites-enabled/fake 2>/dev/null || true
-                systemctl restart nginx 2>/dev/null || true
-                ;;
-            "cert")
-                log_info "Удаление сертификата Let's Encrypt..."
-                certbot delete --cert-name "$DOMAIN" --non-interactive 2>/dev/null || true
-                ;;
-            "xray")
-                log_info "Остановка и удаление Xray..."
-                systemctl stop xray 2>/dev/null || true
-                systemctl disable xray 2>/dev/null || true
-                rm -f /usr/local/bin/xray /etc/systemd/system/xray.service 2>/dev/null || true
-                rm -rf /etc/xray /var/log/xray /usr/local/share/xray 2>/dev/null || true
-                systemctl daemon-reload 2>/dev/null || true
-                ;;
-            "hysteria")
-                log_info "Остановка и удаление Hysteria..."
-                systemctl stop hysteria 2>/dev/null || true
-                systemctl disable hysteria 2>/dev/null || true
-                rm -f /usr/local/bin/hysteria /etc/systemd/system/hysteria.service 2>/dev/null || true
-                rm -rf /etc/hysteria 2>/dev/null || true
-                systemctl daemon-reload 2>/dev/null || true
-                ;;
-        esac
-    done
-    log_warning "Откат завершён. Проверьте систему вручную."
-    exit $exit_code
-}
+# 1. Зависимости
+log_info "Установка зависимостей..."
+apt update && apt upgrade -y -qq
+apt install -y nginx curl wget unzip jq openssl uuid-runtime certbot python3-certbot-nginx cron ufw -qq
 
-# ----------------------------- Проверка прав и зависимостей ------------------
-check_prerequisites() {
-    log_stage "ПРОВЕРКА СИСТЕМЫ"
-    
-    # Проверка root-прав
-    if [[ $EUID -ne 0 ]]; then
-        log_error "Скрипт должен быть запущен от root. Используйте: sudo bash $0"
-        exit 1
-    fi
+# Открываем порты
+if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+    ufw allow 443/udp
+    log_info "Порты 80, 443 TCP/UDP открыты в ufw"
+fi
 
-    # Маппинг: команда → имя пакета для разных дистрибутивов
-    # Формат: "команда:pkg_apt:pkg_dnf_yum"
-    declare -A CMD_TO_PKG=(
-        [curl]="curl:curl:curl"
-        [wget]="wget:wget:wget"
-        [systemctl]="systemd:systemd:systemd"  # команда в составе systemd
-        [ufw]="ufw:ufw:ufw"
-        [openssl]="openssl:openssl:openssl"
-        [uuidgen]="uuid-runtime:util-linux:util-linux"  # !ВАЖНО: uuidgen не имя пакета
-        [jq]="jq:jq:jq"
-        [cron]="cron:cronie:cronie"
-        [unzip]="unzip:unzip:unzip"
-        [certbot]="certbot:certbot:certbot"
-    )
+# 2. Домен и email
+echo ""
+log_info "=== Настройка домена и SSL ==="
+read -p "Домен для заглушки (например portal.example.com): " DOMAIN
+read -p "Email для Let's Encrypt: " EMAIL
 
-    # Определяем пакетный менеджер
-    local pkg_manager=""
-    local pkg_install_opts=""
-    if command -v apt &>/dev/null; then
-        pkg_manager="apt"
-        pkg_install_opts="-y -qq"
-    elif command -v dnf &>/dev/null; then
-        pkg_manager="dnf"
-        pkg_install_opts="-y -q"
-    elif command -v yum &>/dev/null; then
-        pkg_manager="yum"
-        pkg_install_opts="-y -q"
-    else
-        log_error "Не найден поддерживаемый пакетный менеджер (apt/dnf/yum)"
-        exit 1
-    fi
+[ -z "$DOMAIN" ] || [ -z "$EMAIL" ] && log_error "Домен и email обязательны"
 
-    # Собираем список отсутствующих команд
-    local needed_commands=("curl" "wget" "systemctl" "ufw" "openssl" "uuidgen" "jq")
-    local missing_pkgs=()
-    
-    for cmd in "${needed_commands[@]}"; do
-        if ! command -v "$cmd" &>/dev/null; then
-            # Получаем имя пакета для текущего менеджера
-            local pkg_mapping="${CMD_TO_PKG[$cmd]}"
-            if [[ -n "$pkg_mapping" ]]; then
-                # Разделяем по : и берём нужный вариант
-                IFS=':' read -ra pkg_parts <<< "$pkg_mapping"
-                local pkg_name=""
-                case "$pkg_manager" in
-                    apt) pkg_name="${pkg_parts[0]}" ;;
-                    dnf|yum) pkg_name="${pkg_parts[1]}" ;;
-                esac
-                if [[ -n "$pkg_name" ]]; then
-                    missing_pkgs+=("$pkg_name")
-                    log_warning "Отсутствует команда '$cmd' → пакет '$pkg_name'"
-                fi
-            else
-                # Если маппинга нет, пробуем установить как есть (на всякий случай)
-                missing_pkgs+=("$cmd")
-                log_warning "Отсутствует команда '$cmd' (пакет неизвестен, пробую '$cmd')"
-            fi
-        fi
-    done
-
-    # Устанавливаем недостающие пакеты, если есть
-    if [[ ${#missing_pkgs[@]} -gt 0 ]]; then
-        log_stage "УСТАНОВКА ЗАВИСИМОСТЕЙ"
-        log_info "Обновление списков пакетов..."
-        
-        if [[ "$pkg_manager" == "apt" ]]; then
-            apt update -qq &>/dev/null || log_error "apt update не удался"
-        fi
-        
-        log_info "Установка пакетов: ${missing_pkgs[*]}"
-        if ! $pkg_manager install $pkg_install_opts "${missing_pkgs[@]}" &>/dev/null; then
-            log_error "Не удалось установить пакеты: ${missing_pkgs[*]}"
-            exit 1
-        fi
-        
-        # Перепроверяем, что все команды теперь доступны
-        for cmd in "${needed_commands[@]}"; do
-            if ! command -v "$cmd" &>/dev/null; then
-                log_error "Команда '$cmd' не стала доступна после установки пакетов"
-                exit 1
-            fi
-        done
-        log_success "Зависимости успешно установлены"
-    else
-        log_success "Все необходимые команды уже доступны"
-    fi
-}
-
-# ----------------------------- Ввод домена (только ручной) -------------------
-choose_domain() {
-    log_stage "НАСТРОЙКА ДОМЕНА"
-    echo -e "${ARROW} Введите ваш домен, который уже указывает на IP этого сервера."
-    echo -e "   Например: vpn.example.com или portal.example.com"
-    read -p "Домен: " DOMAIN
-
-    if [[ -z "$DOMAIN" ]]; then
-        log_error "Домен не может быть пустым"
-    fi
-    # Простейшая проверка формата домена
-    if ! [[ "$DOMAIN" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
-        log_error "Неверный формат домена"
-    fi
-    # Проверка резолвинга (опционально)
-    if ! getent hosts "$DOMAIN" &>/dev/null; then
-        log_warning "Домен $DOMAIN не резолвится. Убедитесь, что DNS запись настроена и распространилась."
-    else
-        log_success "Домен $DOMAIN резолвится корректно"
-    fi
-}
-
-# ----------------------------- Определение активного сетевого интерфейса -----
-detect_interface() {
-    log_stage "ОПРЕДЕЛЕНИЕ СЕТЕВОГО ИНТЕРФЕЙСА"
-    local interfaces=($(ip -br link | awk '$2 == "UP" && $1 != "lo" {print $1}'))
-    if [[ ${#interfaces[@]} -eq 0 ]]; then
-        log_warning "Активные интерфейсы не найдены, используется eth0"
-        ACTIVE_INTERFACE="eth0"
-    elif [[ ${#interfaces[@]} -eq 1 ]]; then
-        ACTIVE_INTERFACE="${interfaces[0]}"
-        log_success "Найден интерфейс: $ACTIVE_INTERFACE"
-    else
-        echo -e "${ARROW} Найдено несколько активных интерфейсов:"
-        select IF in "${interfaces[@]}"; do
-            if [[ -n "$IF" ]]; then
-                ACTIVE_INTERFACE="$IF"
-                log_success "Выбран интерфейс: $ACTIVE_INTERFACE"
-                break
-            else
-                log_warning "Неверный выбор, попробуйте снова"
-            fi
-        done
-    fi
-}
-
-# ----------------------------- Установка зависимостей -------------------------
-install_deps() {
-    log_stage "УСТАНОВКА ЗАВИСИМОСТЕЙ"
-    log_info "Обновление списка пакетов и установка необходимого ПО..."
-    apt update -qq &>/dev/null || log_error "apt update не удался"
-    apt upgrade -y -qq &>/dev/null || log_warning "apt upgrade пропущен"
-    apt install -y -qq nginx curl wget unzip jq openssl uuid-runtime certbot python3-certbot-nginx cron ufw &>/dev/null || log_error "Не удалось установить базовые пакеты"
-    log_success "Зависимости установлены"
-
-    # Открытие портов в ufw
-    if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
-        log_info "Настройка UFW: открываем порты 80, 443 TCP/UDP"
-        ufw allow 80/tcp &>/dev/null
-        ufw allow 443/tcp &>/dev/null
-        ufw allow 443/udp &>/dev/null
-        log_success "Порты открыты"
-    fi
-    INSTALL_STEPS+=("deps")
-}
-
-# ----------------------------- Настройка Nginx (фейковая страница) -----------
-setup_nginx() {
-    log_stage "НАСТРОЙКА NGINX (ФЕЙКОВАЯ СТРАНИЦА)"
-    log_info "Создание директории /var/www/fake"
-    mkdir -p /var/www/fake
-
-    # Минимальная заглушка (пользователь заменит позже)
-    cat > /var/www/fake/index.html << 'EOF'
+# 3. Фейковая страница
+mkdir -p /var/www/fake
+cat > /var/www/fake/index.html << 'EOF'
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -511,368 +299,154 @@ setup_nginx() {
 </body>
 </html>
 EOF
-    chmod -R 755 /var/www/fake
 
-    # Резервное копирование существующего default
-    if [[ -f /etc/nginx/sites-enabled/default ]]; then
-        cp /etc/nginx/sites-enabled/default "${BACKUP_DIR}/nginx_default.bak"
-    fi
+chmod -R 755 /var/www/fake
 
-    log_info "Создание конфигурации Nginx (порт 80)..."
-    cat > /etc/nginx/sites-available/fake << EOF
+# 4. Nginx на 80 для Certbot
+log_info "Запускаем Nginx только на порту 80..."
+cat > /etc/nginx/sites-available/fake << EOF
 server {
     listen 80;
     server_name ${DOMAIN};
+
     root /var/www/fake;
     index index.html;
-    location / { try_files \$uri \$uri/ /index.html; }
+
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
 }
 EOF
 
-    ln -sf /etc/nginx/sites-available/fake /etc/nginx/sites-enabled/
-    rm -f /etc/nginx/sites-enabled/default
+ln -sf /etc/nginx/sites-available/fake /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
 
-    nginx -t &>/dev/null || log_error "Конфигурация Nginx (порт 80) не прошла проверку"
-    systemctl restart nginx &>/dev/null || log_error "Не удалось запустить Nginx"
-    log_success "Nginx слушает порт 80"
-    INSTALL_STEPS+=("nginx_fake")
+nginx -t || log_error "Nginx не прошёл проверку на 80"
+systemctl restart nginx || log_error "Не удалось запустить Nginx на 80"
+
+# 5. Сертификат
+log_info "Получаем сертификат через webroot..."
+certbot certonly --webroot \
+  -w /var/www/fake \
+  -d "${DOMAIN}" \
+  --email "${EMAIL}" \
+  --agree-tos \
+  --non-interactive \
+  --no-eff-email || log_error "Certbot ошибка. Лог: tail -n 50 /var/log/letsencrypt/letsencrypt.log"
+
+[ ! -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ] && log_error "Сертификат не найден"
+
+log_success "Сертификат получен!"
+
+# 6. HTTPS в Nginx
+log_info "Добавляем HTTPS..."
+cat > /etc/nginx/sites-available/fake << EOF
+server {
+    listen 80;
+    server_name ${DOMAIN};
+    return 301 https://\$host\$request_uri;
 }
 
-# ----------------------------- Получение SSL-сертификата ---------------------
-get_certificate() {
-    log_stage "ПОЛУЧЕНИЕ SSL-СЕРТИФИКАТА LET'S ENCRYPT"
+server {
+    listen 443 ssl http2;
+    server_name ${DOMAIN};
 
-    # Получаем домен: из аргумента ИЛИ из глобальной переменной
-    local domain="${1:-${DOMAIN:-}}"
+    root /var/www/fake;
+    index index.html;
 
-    # Критическая проверка: домен должен быть задан
-    if [[ -z "$domain" ]]; then
-        log_error "Домен не указан! Проверьте переменную DOMAIN или передайте домен как аргумент."
-        return 1
-    fi
+    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
 
-    local webroot="/var/www/fake"
-    local cert_dir="/etc/letsencrypt/live/${domain}"
-    local certbot_cmd="certbot"
-
-    # Проверяем, не получен ли сертификат уже
-    if [[ -f "${cert_dir}/fullchain.pem" ]]; then
-        local expiry=""
-        expiry=$(openssl x509 -enddate -noout -in "${cert_dir}/fullchain.pem" 2>/dev/null | cut -d= -f2) || true
-        log_info "Сертификат для ${domain} уже существует"
-        log_info "Срок действия до: ${expiry:-неизвестно}"
-
-        # Проверяем, не истекает ли скоро (менее 30 дней)
-        if openssl x509 -checkend $((30*24*60*60)) -noout -in "${cert_dir}/fullchain.pem" 2>/dev/null; then
-            log_success "Сертификат действителен, пропускаем перевыпуск"
-            return 0
-        else
-            log_warning "Сертификат истекает менее чем через 30 дней, перевыпускаем..."
-        fi
-    fi
-
-    # Запрос email для регистрации в Let's Encrypt
-    local certbot_email=""
-    echo -e "\n➜ Для получения сертификата необходим email (для уведомлений об истечении):"
-    echo -e "   Пример: admin@${domain} или your.name@example.com\n"
-
-    while [[ -z "$certbot_email" ]]; do
-        read -r -p "Email: " certbot_email
-        certbot_email=$(echo "$certbot_email" | xargs)  # trim whitespace
-
-        if [[ -z "$certbot_email" ]]; then
-            echo -e "[✗] Email обязателен для продолжения."
-        elif [[ ! "$certbot_email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
-            echo -e "[✗] Некорректный формат email. Попробуйте ещё раз."
-            certbot_email=""
-        fi
-    done
-
-    # Определяем, какой режим использовать: webroot или standalone
-    local certbot_mode="webroot"
-    local certbot_args=()
-
-    # Проверяем, доступен ли .well-known извне (с таймаутом)
-    if ! curl -s --connect-timeout 5 "http://${domain}/.well-known/acme-challenge/test" &>/dev/null; then
-        log_warning "Webroot-проверка недоступна извне. Пробуем режим standalone..."
-
-        # Останавливаем nginx, чтобы освободить порт 80 для standalone
-        if systemctl is-active --quiet nginx 2>/dev/null; then
-            log_info "Остановка nginx для получения сертификата..."
-            systemctl stop nginx
-            certbot_mode="standalone"
-        else
-            log_error "Порт 80 недоступен для проверки Let's Encrypt."
-            log_error "Проверьте, что домен ${domain} резолвится на этот IP и порт 80 открыт."
-            return 1
-        fi
-    fi
-
-    # Формируем аргументы для certbot
-    certbot_args=(
-        certonly
-        --"${certbot_mode}"
-        -d "${domain}"
-        --email "${certbot_email}"
-        --agree-tos
-        --non-interactive
-        --quiet
-    )
-
-    if [[ "$certbot_mode" == "webroot" ]]; then
-        certbot_args+=(--webroot-path "${webroot}")
-        log_info "Получение сертификата через webroot (${webroot})..."
-    else
-        log_info "Получение сертификата через standalone (порт 80)..."
-    fi
-
-    # Запуск certbot с обработкой ошибок
-    local max_attempts=3
-    local attempt=1
-
-    while [[ $attempt -le $max_attempts ]]; do
-        log_info "Попытка #$attempt из $max_attempts..."
-
-        if $certbot_cmd "${certbot_args[@]}" &>/dev/null; then
-            log_success "Сертификат успешно получен!"
-            break
-        else
-            local exit_code=$?
-            log_warning "Certbot завершился с кодом $exit_code"
-
-            # Анализируем лог для точной диагностики
-            local latest_log=""
-            latest_log=$(ls -t /var/log/letsencrypt/letsencrypt*.log 2>/dev/null | head -1) || true
-            if [[ -n "$latest_log" ]]; then
-                local error_snippet=""
-                error_snippet=$(grep -iE "error|failed|unauthorized|timeout|connection refused" "$latest_log" 2>/dev/null | tail -3) || true
-                if [[ -n "$error_snippet" ]]; then
-                    log_error "Детали ошибки из лога:"
-                    echo "$error_snippet" | sed 's/^/    /'
-                fi
-            fi
-
-            if [[ $attempt -eq $max_attempts ]]; then
-                log_error "Не удалось получить сертификат после $max_attempts попыток."
-                # Восстанавливаем nginx, если останавливали
-                if [[ "$certbot_mode" == "standalone" ]]; then
-                    log_info "Запуск nginx..."
-                    systemctl start nginx 2>/dev/null || true
-                fi
-                return 1
-            fi
-
-            log_info "Ждём 10 секунд перед повторной попыткой..."
-            sleep 10
-            ((attempt++))
-        fi
-    done
-
-    # Финальная проверка: файлы сертификата должны существовать
-    if [[ ! -f "${cert_dir}/fullchain.pem" ]] || [[ ! -f "${cert_dir}/privkey.pem" ]]; then
-        log_error "Файлы сертификата не найдены после успешного выполнения certbot!"
-        return 1
-    fi
-
-    # Восстанавливаем nginx, если останавливали для standalone
-    if [[ "$certbot_mode" == "standalone" ]]; then
-        log_info "Восстановление работы nginx..."
-        systemctl start nginx 2>/dev/null || log_warning "Не удалось запустить nginx, проверьте вручную"
-    fi
-
-    # Проверяем, что сертификат валиден
-    if openssl x509 -checkend 0 -noout -in "${cert_dir}/fullchain.pem" 2>/dev/null; then
-        local expiry=""
-        expiry=$(openssl x509 -enddate -noout -in "${cert_dir}/fullchain.pem" 2>/dev/null | cut -d= -f2) || true
-        log_success "Сертификат активен, истекает: ${expiry:-неизвестно}"
-    else
-        log_error "Получен невалидный сертификат!"
-        return 1
-    fi
-
-    # Настраиваем автообновление (если ещё не настроено)
-    if ! crontab -l 2>/dev/null | grep -q "certbot renew"; then
-        log_info "Настройка автообновления сертификата..."
-        (crontab -l 2>/dev/null; echo "0 3 * * * ${certbot_cmd} renew --quiet --deploy-hook 'systemctl reload nginx'") | crontab - 2>/dev/null || true
-    fi
-
-    log_success "SSL-сертификат настроен для ${domain}"
-    return 0
-}
-    
-    # === Финальная проверка и восстановление ===
-    
-    # Проверяем, что файлы сертификата появились
-    if [[ ! -f "${cert_dir}/fullchain.pem" ]] || [[ ! -f "${cert_dir}/privkey.pem" ]]; then
-        log_error "Файлы сертификата не найдены после успешного выполнения certbot!"
-        return 1
-    fi
-    
-    # Восстанавливаем nginx, если останавливали для standalone
-    if [[ "$certbot_mode" == "standalone" ]]; then
-        log_info "Восстановление работы nginx..."
-        systemctl start nginx 2>/dev/null || log_warning "Не удалось запустить nginx, проверьте вручную"
-    fi
-    
-    # Проверяем, что сертификат валиден
-    if openssl x509 -checkend 0 -noout -in "${cert_dir}/fullchain.pem" 2>/dev/null; then
-        local expiry=""
-        expiry=$(openssl x509 -enddate -noout -in "${cert_dir}/fullchain.pem" 2>/dev/null | cut -d= -f2) || true
-        log_success "Сертификат активен, истекает: ${expiry:-неизвестно}"
-    else
-        log_error "Получен невалидный сертификат!"
-        return 1
-    fi
-    
-    # Настраиваем автообновление (если ещё не настроено)
-    if ! crontab -l 2>/dev/null | grep -q "certbot renew" 2>/dev/null; then
-        log_info "Настройка автообновления сертификата..."
-        (crontab -l 2>/dev/null; echo "0 3 * * * ${certbot_cmd} renew --quiet --deploy-hook 'systemctl reload nginx'") | crontab - 2>/dev/null || true
-    fi
-    
-    log_success "SSL-сертификат настроен для ${domain}"
-    return 0
-}
-    
-    # === Финальная проверка и восстановление ===
-    
-    # Проверяем, что файлы сертификата появились
-    if [[ ! -f "$cert_dir/fullchain.pem" ]] || [[ ! -f "$cert_dir/privkey.pem" ]]; then
-        log_error "Файлы сертификата не найдены после успешного выполнения certbot!"
-        return 1
-    fi
-    
-    # Восстанавливаем nginx, если останавливали для standalone
-    if [[ "$certbot_mode" == "standalone" ]]; then
-        log_info "Восстановление работы nginx..."
-        systemctl start nginx || log_warning "Не удалось запустить nginx, проверьте вручную"
-    fi
-    
-    # Проверяем, что сертификат валиден
-    if openssl x509 -checkend 0 -noout -in "$cert_dir/fullchain.pem" 2>/dev/null; then
-        local expiry=$(openssl x509 -enddate -noout -in "$cert_dir/fullchain.pem" | cut -d= -f2)
-        log_success "Сертификат активен, истекает: $expiry"
-    else
-        log_error "Получен невалидный сертификат!"
-        return 1
-    fi
-    
-    # Настраиваем автообновление (если ещё не настроено)
-    if ! crontab -l 2>/dev/null | grep -q "certbot renew"; then
-        log_info "Настройка автообновления сертификата..."
-        (crontab -l 2>/dev/null; echo "0 3 * * * $certbot_cmd renew --quiet --deploy-hook 'systemctl reload nginx'") | crontab -
-    fi
-    
-    log_success "SSL-сертификат настроен для $domain"
-    return 0
-}
-    
-    # === Финальная проверка и восстановление ===
-    
-    # Проверяем, что файлы сертификата появились
-    if [[ ! -f "$cert_dir/fullchain.pem" ]] || [[ ! -f "$cert_dir/privkey.pem" ]]; then
-        log_error "Файлы сертификата не найдены после успешного выполнения certbot!"
-        return 1
-    fi
-    
-    # Восстанавливаем nginx, если останавливали для standalone
-    if [[ "$certbot_mode" == "standalone" ]]; then
-        log_info "Восстановление работы nginx..."
-        systemctl start nginx || log_warning "Не удалось запустить nginx, проверьте вручную"
-    fi
-    
-    # Проверяем, что сертификат валиден
-    if openssl x509 -checkend 0 -noout -in "$cert_dir/fullchain.pem" 2>/dev/null; then
-        local expiry=$(openssl x509 -enddate -noout -in "$cert_dir/fullchain.pem" | cut -d= -f2)
-        log_success "Сертификат активен, истекает: $expiry"
-    else
-        log_error "Получен невалидный сертификат!"
-        return 1
-    fi
-    
-    # Настраиваем автообновление (если ещё не настроено)
-    if ! crontab -l 2>/dev/null | grep -q "certbot renew"; then
-        log_info "Настройка автообновления сертификата..."
-        (crontab -l 2>/dev/null; echo "0 3 * * * $certbot_cmd renew --quiet --deploy-hook 'systemctl reload nginx'") | crontab -
-    fi
-    
-    log_success "SSL-сертификат настроен для $domain"
-    return 0
-}
-
-# ----------------------------- Установка Xray ---------------------------------
-install_xray() {
-    log_stage "УСТАНОВКА XRAY"
-    log_info "Создание директорий..."
-    mkdir -p /etc/xray /var/log/xray /usr/local/share/xray
-
-    log_info "Определение последней версии Xray..."
-    XRAY_VER=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r .tag_name | sed 's/v//') || log_error "Не удалось получить версию Xray"
-    log_success "Версия: $XRAY_VER"
-
-    log_info "Загрузка Xray-core..."
-    wget -q "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-linux-64.zip" -O /tmp/xray.zip || log_error "Ошибка загрузки Xray"
-    log_info "Распаковка..."
-    unzip -qo /tmp/xray.zip -d /usr/local/bin/ xray || log_error "Ошибка распаковки Xray"
-    chmod +x /usr/local/bin/xray
-    rm -f /tmp/xray.zip
-    log_success "Xray установлен"
-
-    log_info "Загрузка геоданных (geoip.dat, geosite.dat)..."
-    wget -q -O /usr/local/share/xray/geoip.dat    "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" || log_warning "Не удалось загрузить geoip.dat"
-    wget -q -O /usr/local/share/xray/geosite.dat  "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" || log_warning "Не удалось загрузить geosite.dat"
-
-    # Генерация ключей Reality
-    log_info "Генерация ключей Reality..."
-    xray_keys=$(/usr/local/bin/xray x25519 2>/dev/null)
-    PRIVATE_KEY=$(echo "$xray_keys" | grep -oP 'PrivateKey: \K\S+')
-    PUBLIC_KEY=$(echo "$xray_keys" | grep -oP 'Password: \K\S+')
-    SHORT_ID=$(openssl rand -hex 8)
-    log_success "Ключи сгенерированы"
-
-    # Ввод параметров пользователем
-    echo ""
-    read -p "SNI для Reality (например, www.microsoft.com): " SNI
-    read -p "Path для XHTTP (начинается с /, например /xhttp): " XHTTP_PATH
-    if [[ ! "$XHTTP_PATH" =~ ^/ ]]; then
-        log_error "Path должен начинаться с /"
-    fi
-    read -p "Порт Shadowsocks (1024-65535): " SS_PORT
-    while [[ ! "$SS_PORT" =~ ^[0-9]+$ || "$SS_PORT" -lt 1024 || "$SS_PORT" -gt 65535 ]]; do
-        log_warning "Порт должен быть в диапазоне 1024–65535"
-        read -p "Порт Shadowsocks: " SS_PORT
-    done
-    # Проверка, что порт не занят
-    if ss -tuln | grep -q ":${SS_PORT} "; then
-        log_error "Порт $SS_PORT уже занят"
-    fi
-
-    echo ""
-    read -p "Имя пользователя (только латиница, цифры, _): " USERNAME
-    if [[ ! "$USERNAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
-        log_error "Неверное имя пользователя"
-    fi
-
-    UUID=$(uuidgen)
-    HY_PASS=$(openssl rand -hex 16)
-
-    generate_ss_pass() {
-        local PASS
-        while true; do
-            PASS=$(openssl rand -base64 32 | tr -d '\n')
-            if [[ "$PASS" != *"/"* && "$PASS" != *"+"* ]]; then
-                echo "$PASS"
-                return 0
-            fi
-        done
+    location / {
+        try_files \$uri \$uri/ /index.html;
     }
-    SS_SERVER_PASS=$(generate_ss_pass)
-    SS_USER_PASS=$(generate_ss_pass)
+}
+EOF
 
-    log_success "Параметры пользователя сгенерированы"
+nginx -t || log_error "Nginx с HTTPS не прошёл проверку"
+systemctl restart nginx || log_error "Не удалось запустить Nginx с HTTPS"
 
-    # Конфиг Xray
-    cat > /etc/xray/config.json << EOF
+log_success "Nginx готов"
+
+# Установка Xray
+log_info "Установка Xray..."
+mkdir -p /etc/xray /var/log/xray
+XRAY_VER=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r .tag_name | sed 's/v//')
+wget -q "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-linux-64.zip" -O /tmp/xray.zip
+unzip -qo /tmp/xray.zip -d /usr/local/bin/ xray
+chmod +x /usr/local/bin/xray
+rm -f /tmp/xray.zip
+
+# Скачиваем geoip.dat и geosite.dat (обязательно для routing с geoip:private)
+log_info "Скачиваем geoip.dat и geosite.dat..."
+mkdir -p /usr/local/share/xray
+
+wget -q -O /usr/local/share/xray/geoip.dat    "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
+wget -q -O /usr/local/share/xray/geosite.dat  "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
+
+# Reality ключи — берём PrivateKey и Password (pbk = Password)
+xray_keys=$(xray x25519 2>/dev/null)
+PRIVATE_KEY=$(echo "$xray_keys" | grep -oP 'PrivateKey: \K\S+')
+PUBLIC_KEY=$(echo "$xray_keys" | grep -oP 'Password: \K\S+')   # Это и есть pbk
+SHORT_ID=$(openssl rand -hex 8)
+
+# Настройки
+echo ""
+log_info "=== Настройки Xray ==="
+read -p "SNI для Reality: " SNI
+read -p "Path для XHTTP: " XHTTP_PATH
+read -p "Порт Shadowsocks: " SS_PORT
+while [[ ! "$SS_PORT" =~ ^[0-9]+$ || "$SS_PORT" -lt 1024 || "$SS_PORT" -gt 65535 ]]; do
+    log_warning "Порт 1024–65535"
+    read -p "Порт Shadowsocks: " SS_PORT
+done
+
+echo ""
+log_info "=== Пользователь ==="
+read -p "Имя пользователя: " USERNAME
+[[ ! "$USERNAME" =~ ^[a-zA-Z0-9_]+$ ]] && log_error "Неверное имя"
+
+UUID=$(uuidgen)
+HY_PASS=$(openssl rand -hex 16)
+
+generate_ss_server_pass() {
+    local PASS
+    while true; do
+        PASS=$(openssl rand -base64 32 | tr -d '\n')
+        # Проверяем, что нет нежелательных символов
+        if [[ "$PASS" != *"/"* && "$PASS" != *"+"* ]]; then
+            echo "$PASS"
+            return 0
+        fi
+        # Если попали сюда, значит есть / или + – повторяем цикл
+    done
+}
+
+SS_SERVER_PASS=$(generate_ss_server_pass)
+
+generate_ss_user_pass() {
+    local PASS
+    while true; do
+        PASS=$(openssl rand -base64 32 | tr -d '\n')
+        # Проверяем, что нет нежелательных символов
+        if [[ "$PASS" != *"/"* && "$PASS" != *"+"* ]]; then
+            echo "$PASS"
+            return 0
+        fi
+        # Если попали сюда, значит есть / или + – повторяем цикл
+    done
+}
+
+SS_USER_PASS=$(generate_ss_user_pass)
+
+log_success "Пользователь: ${USERNAME}"
+log_info "UUID: ${UUID}"
+log_info "Hysteria2 pass: ${HY_PASS}"
+log_info "SS server pass: ${SS_SERVER_PASS}"
+log_info "SS user pass: ${SS_USER_PASS}"
+
+# Xray config
+cat > /etc/xray/config.json << EOF
 {
   "log": {"loglevel": "warning"},
   "routing": {
@@ -929,8 +503,7 @@ install_xray() {
 }
 EOF
 
-    # systemd unit
-    cat > /etc/systemd/system/xray.service << 'EOF'
+cat > /etc/systemd/system/xray.service << 'EOF'
 [Unit]
 Description=Xray Service
 After=network.target
@@ -942,37 +515,30 @@ LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 EOF
+systemctl daemon-reload
+systemctl enable --now xray
 
-    systemctl daemon-reload &>/dev/null
-    systemctl enable --now xray &>/dev/null || log_error "Не удалось запустить Xray"
-    log_success "Xray запущен"
-    INSTALL_STEPS+=("xray")
+# Установка Hysteria2
+log_info "Установка Hysteria2..."
+HY_VER=$(curl -s https://api.github.com/repos/apernet/hysteria/releases/latest | jq -r .tag_name)
+wget -q "https://github.com/apernet/hysteria/releases/download/${HY_VER}/hysteria-linux-amd64" -O /usr/local/bin/hysteria
+chmod +x /usr/local/bin/hysteria
 
-    # Открыть порт SS в ufw
-    if command -v ufw &>/dev/null && ufw status | grep -q "active"; then
-        ufw allow "${SS_PORT}"/tcp &>/dev/null
-        log_info "Порт $SS_PORT TCP открыт в ufw"
-    fi
-}
+# Определение активного сетевого интерфейса 
+log_info "Определение активного сетевого интерфейса..."
+ACTIVE_INTERFACE=$(ip -br link | awk '$2 == "UP" && $1 != "lo" {print $1; exit}')
+if [ -z "$ACTIVE_INTERFACE" ]; then
+    log_warning "Активный сетевой интерфейс не найден, будет использован eth0"
+    ACTIVE_INTERFACE="eth0"
+else
+    log_success "Active interface: $ACTIVE_INTERFACE"
+fi
 
-# ----------------------------- Установка Hysteria2 ---------------------------
-install_hysteria() {
-    log_stage "УСТАНОВКА HYSTERIA2"
-    log_info "Определение последней версии Hysteria..."
-    HY_VER=$(curl -s https://api.github.com/repos/apernet/hysteria/releases/latest | jq -r .tag_name) || log_error "Не удалось получить версию Hysteria"
-    log_success "Версия: $HY_VER"
+OBFS_PASS=$(openssl rand -hex 16)
 
-    log_info "Загрузка Hysteria..."
-    wget -q "https://github.com/apernet/hysteria/releases/download/${HY_VER}/hysteria-linux-amd64" -O /usr/local/bin/hysteria || log_error "Ошибка загрузки Hysteria"
-    chmod +x /usr/local/bin/hysteria
-    log_success "Hysteria загружен"
+mkdir -p /etc/hysteria
 
-    # Интерфейс уже определён в detect_interface
-    OBFS_PASS=$(openssl rand -hex 16)
-
-    mkdir -p /etc/hysteria
-
-    cat > /etc/hysteria/config.yaml << EOF
+cat > /etc/hysteria/config.yaml << EOF
 listen: :443
 
 tls:
@@ -997,15 +563,17 @@ masquerade:
     rewriteHost: true
 
 quic:
-  initStreamReceiveWindow: 8388608
-  maxStreamReceiveWindow: 8388608
-  initConnReceiveWindow: 20971520
-  maxConnReceiveWindow: 20971520
-  maxIdleTimeout: 30s
-  maxIncomingStreams: 1024
+  initStreamReceiveWindow: 8388608 
+  maxStreamReceiveWindow: 8388608 
+  initConnReceiveWindow: 20971520 
+  maxConnReceiveWindow: 20971520 
+  maxIdleTimeout: 30s 
+  maxIncomingStreams: 1024 
   disablePathMTUDiscovery: false
 
 ignoreClientBandwidth: false
+  
+speedTest: false
 disableUDP: false
 udpIdleTimeout: 60s
 
@@ -1013,12 +581,12 @@ outbounds:
   - name: outbound_direct
     type: direct
     direct:
-      mode: auto
-      bindDevice: ${ACTIVE_INTERFACE}
-      fastOpen: false
+      mode: auto 
+      bindDevice: ${ACTIVE_INTERFACE} 
+      fastOpen: false 
 EOF
 
-    cat > /etc/systemd/system/hysteria.service << 'EOF'
+cat > /etc/systemd/system/hysteria.service << 'EOF'
 [Unit]
 Description=Hysteria2 Server
 After=network.target
@@ -1029,102 +597,18 @@ LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 EOF
+systemctl daemon-reload
+systemctl enable --now hysteria
 
-    systemctl daemon-reload &>/dev/null
-    systemctl enable --now hysteria &>/dev/null || log_error "Не удалось запустить Hysteria"
-    log_success "Hysteria запущен"
-    INSTALL_STEPS+=("hysteria")
-}
+# Открываем порт SS
+ufw allow "${SS_PORT}"/tcp || true
+ufw reload || true
 
-# ----------------------------- Настройка авто-перезагрузки --------------------
-setup_auto_reboot() {
-    echo ""
-    log_stage "НАСТРОЙКА АВТОМАТИЧЕСКОЙ ПЕРЕЗАГРУЗКИ"
-    
-    # Определяем текущую таймзону
-    current_timezone=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null)
-    if [[ -z "$current_timezone" ]]; then
-        current_timezone="не определена"
-    fi
-    
-    echo -e "${ARROW} Текущий часовой пояс: ${CYAN}${current_timezone}${NC}"
-    if [[ "$current_timezone" != "Europe/Moscow" && "$current_timezone" != "MSK" ]]; then
-        read -p "Хотите сменить на Московское время (MSK)? (y/n): " change_tz
-        if [[ "$change_tz" =~ ^[YyДд] ]]; then
-            timedatectl set-timezone Europe/Moscow && log_success "Часовой пояс изменён на MSK" || log_warning "Не удалось сменить часовой пояс"
-            current_timezone="Europe/Moscow"
-        fi
-    fi
-    
-    # Меню выбора периодичности (4 варианта)
-    echo -e "\n${ARROW} Выберите периодичность перезагрузки:"
-    echo "   1) Не создавать задачу"
-    echo "   2) Каждый день"
-    echo "   3) Каждые 3 дня"
-    echo "   4) Раз в 7 дней (по пятницам)"
-    read -p "Ваш выбор [1/2/3/4]: " period_choice
-    
-    # Если выбран пункт 1, выходим
-    if [[ "$period_choice" == "1" ]]; then
-        log_info "Автоматическая перезагрузка не будет настроена."
-        return
-    fi
-    
-    # Запрос времени в 24-часовом формате
-    while true; do
-        read -p "Введите время перезагрузки в 24-часовом формате (ЧЧ:ММ), например 04:30 или 16:00: " reboot_time
-        reboot_time=$(echo "$reboot_time" | tr -d ' ')
-        if [[ "$reboot_time" =~ ^([0-9]{1,2}):([0-9]{2})$ ]]; then
-            hour=${BASH_REMATCH[1]}
-            minute=${BASH_REMATCH[2]}
-            if (( hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 )); then
-                break
-            else
-                log_warning "Неверное время: часы должны быть 0-23, минуты 0-59."
-            fi
-        else
-            log_warning "Неверный формат. Используйте ЧЧ:ММ, например 04:30."
-        fi
-    done
-    
-    # Формирование cron-записи в зависимости от выбранной периодичности
-    case $period_choice in
-        2) # каждый день
-            cron_expr="$minute $hour * * *"
-            desc="ежедневно в ${hour}:${minute}"
-            ;;
-        3) # каждые 3 дня
-            cron_expr="$minute $hour */3 * *"
-            desc="каждые 3 дня в ${hour}:${minute} (по числам месяца)"
-            ;;
-        4) # раз в 7 дней (пятница)
-            cron_expr="$minute $hour * * 5"   # 5 = пятница
-            desc="еженедельно по пятницам в ${hour}:${minute}"
-            ;;
-        *)
-            log_warning "Неверный выбор, перезагрузка не настроена."
-            return
-            ;;
-    esac
-    
-    # Добавляем задачу в crontab, избегая дублирования
-    crontab_current=$(crontab -l 2>/dev/null || true)
-    if echo "$crontab_current" | grep -q "/sbin/reboot"; then
-        log_warning "Задача на перезагрузку уже существует в crontab. Пропускаем."
-    else
-        (echo "$crontab_current"; echo "$cron_expr /sbin/reboot") | crontab -
-        log_success "Добавлена задача cron: $cron_expr /sbin/reboot (перезагрузка $desc)"
-    fi
-}
+# 9. Ссылки
+mkdir -p /root/node-keys
+IP=$(curl -s4 icanhazip.com || echo "YOUR_IP")
 
-# ----------------------------- Вывод результатов -----------------------------
-show_results() {
-    log_stage "УСТАНОВКА ЗАВЕРШЕНА УСПЕШНО"
-    mkdir -p /root/node-keys
-    IP=$(curl -s4 ifconfig.me || echo "YOUR_IP")
-
-    # Генерируем файл с ключами
-    cat > /root/node-keys/credentials.txt << EOF
+cat > /root/node-keys/credentials.txt << EOF
 Пользователь: ${USERNAME}
 
 VLESS:
@@ -1137,36 +621,11 @@ Hysteria2:
 hysteria2://${USERNAME}:${HY_PASS}@${IP}:443/?insecure=0&sni=${DOMAIN}&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2
 EOF
 
-    echo -e "\n${GREEN}════════════════════════════════════════════════════════════${NC}"
-    echo -e "${WHITE}   Ссылки и ключи (сохранены в /root/node-keys/credentials.txt)${NC}"
-    echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}\n"
-    
-    # Выводим содержимое файла (можно с подсветкой)
-    cat /root/node-keys/credentials.txt
-    
-    echo -e "\n${GREEN}════════════════════════════════════════════════════════════${NC}"
-    echo -e "${WHITE}   Проверка статуса служб:${NC}"
-    echo -e "   ${CYAN}systemctl status xray${NC}"
-    echo -e "   ${CYAN}systemctl status hysteria${NC}"
-    echo -e "   ${CYAN}systemctl status nginx${NC}"
-    echo -e "\n${WHITE}   Лог установки: ${YELLOW}${LOG_FILE}${NC}"
-    echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}\n"
+log_success "Установка завершена!"
+log_info "Ключи и ссылки:"
+cat /root/node-keys/credentials.txt
 
-    log_success "Установка завершена! Рекомендуется перезагрузить сервер."
-}
-
-# ----------------------------- Основная программа ----------------------------
-main() {
-    check_prerequisites
-    choose_domain
-    detect_interface
-    install_deps
-    setup_nginx
-    get_certificate
-    install_xray
-    install_hysteria
-    setup_auto_reboot
-    show_results
-}
-
-main "$@"
+log_info "Проверьте статус:"
+log_info "systemctl status xray"
+log_info "systemctl status hysteria"
+log_info "reboot рекомендуется"
