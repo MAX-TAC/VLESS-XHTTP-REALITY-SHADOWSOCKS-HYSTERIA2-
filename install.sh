@@ -89,25 +89,98 @@ cleanup_on_error() {
 # ----------------------------- Проверка прав и зависимостей ------------------
 check_prerequisites() {
     log_stage "ПРОВЕРКА СИСТЕМЫ"
+    
+    # Проверка root-прав
     if [[ $EUID -ne 0 ]]; then
         log_error "Скрипт должен быть запущен от root. Используйте: sudo bash $0"
+        exit 1
     fi
 
+    # Маппинг: команда → имя пакета для разных дистрибутивов
+    # Формат: "команда:pkg_apt:pkg_dnf_yum"
+    declare -A CMD_TO_PKG=(
+        [curl]="curl:curl:curl"
+        [wget]="wget:wget:wget"
+        [systemctl]="systemd:systemd:systemd"  # команда в составе systemd
+        [ufw]="ufw:ufw:ufw"
+        [openssl]="openssl:openssl:openssl"
+        [uuidgen]="uuid-runtime:util-linux:util-linux"  # !ВАЖНО: uuidgen не имя пакета
+        [jq]="jq:jq:jq"
+        [cron]="cron:cronie:cronie"
+        [unzip]="unzip:unzip:unzip"
+        [certbot]="certbot:certbot:certbot"
+    )
+
+    # Определяем пакетный менеджер
+    local pkg_manager=""
+    local pkg_install_opts=""
+    if command -v apt &>/dev/null; then
+        pkg_manager="apt"
+        pkg_install_opts="-y -qq"
+    elif command -v dnf &>/dev/null; then
+        pkg_manager="dnf"
+        pkg_install_opts="-y -q"
+    elif command -v yum &>/dev/null; then
+        pkg_manager="yum"
+        pkg_install_opts="-y -q"
+    else
+        log_error "Не найден поддерживаемый пакетный менеджер (apt/dnf/yum)"
+        exit 1
+    fi
+
+    # Собираем список отсутствующих команд
     local needed_commands=("curl" "wget" "systemctl" "ufw" "openssl" "uuidgen" "jq")
-    local missing=()
+    local missing_pkgs=()
+    
     for cmd in "${needed_commands[@]}"; do
         if ! command -v "$cmd" &>/dev/null; then
-            missing+=("$cmd")
+            # Получаем имя пакета для текущего менеджера
+            local pkg_mapping="${CMD_TO_PKG[$cmd]}"
+            if [[ -n "$pkg_mapping" ]]; then
+                # Разделяем по : и берём нужный вариант
+                IFS=':' read -ra pkg_parts <<< "$pkg_mapping"
+                local pkg_name=""
+                case "$pkg_manager" in
+                    apt) pkg_name="${pkg_parts[0]}" ;;
+                    dnf|yum) pkg_name="${pkg_parts[1]}" ;;
+                esac
+                if [[ -n "$pkg_name" ]]; then
+                    missing_pkgs+=("$pkg_name")
+                    log_warning "Отсутствует команда '$cmd' → пакет '$pkg_name'"
+                fi
+            else
+                # Если маппинга нет, пробуем установить как есть (на всякий случай)
+                missing_pkgs+=("$cmd")
+                log_warning "Отсутствует команда '$cmd' (пакет неизвестен, пробую '$cmd')"
+            fi
         fi
     done
 
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        log_warning "Отсутствуют команды: ${missing[*]}. Попытка установить..."
-        apt update -qq &>/dev/null || log_error "apt update не удался"
-        apt install -y -qq "${missing[@]}" &>/dev/null || log_error "Не удалось установить недостающие пакеты: ${missing[*]}"
-        log_success "Зависимости доустановлены"
+    # Устанавливаем недостающие пакеты, если есть
+    if [[ ${#missing_pkgs[@]} -gt 0 ]]; then
+        log_stage "УСТАНОВКА ЗАВИСИМОСТЕЙ"
+        log_info "Обновление списков пакетов..."
+        
+        if [[ "$pkg_manager" == "apt" ]]; then
+            apt update -qq &>/dev/null || log_error "apt update не удался"
+        fi
+        
+        log_info "Установка пакетов: ${missing_pkgs[*]}"
+        if ! $pkg_manager install $pkg_install_opts "${missing_pkgs[@]}" &>/dev/null; then
+            log_error "Не удалось установить пакеты: ${missing_pkgs[*]}"
+            exit 1
+        fi
+        
+        # Перепроверяем, что все команды теперь доступны
+        for cmd in "${needed_commands[@]}"; do
+            if ! command -v "$cmd" &>/dev/null; then
+                log_error "Команда '$cmd' не стала доступна после установки пакетов"
+                exit 1
+            fi
+        done
+        log_success "Зависимости успешно установлены"
     else
-        log_success "Все необходимые команды доступны"
+        log_success "Все необходимые команды уже доступны"
     fi
 }
 
